@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Launcher for the Quest Tether CLI on Linux / SteamOS.
+# Usage: ./quest-tether [doctor|status|connect|install] ...
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$HERE"
+exec python3 -m questtether.cli "$@"
