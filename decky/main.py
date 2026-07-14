@@ -36,6 +36,7 @@ class Plugin:
         self.loop = asyncio.get_event_loop()
         self.adb = ADBManager()
         self.tether = TetherManager(self.adb)
+        self._lock = asyncio.Lock()   # serializes connect/disconnect/unload
         self.busy = False          # a connect/disconnect is in flight
         self.auto = True           # auto-connect when the Quest is plugged in
         self.stop = False
@@ -48,15 +49,18 @@ class Plugin:
 
     async def _unload(self):
         self.stop = True
+        self.tether.auto_reconnect = False   # block reconnect during teardown
         try:
             self.adb.stop_monitoring()
         except Exception:
             pass
-        if self._active():
-            try:
-                await self.loop.run_in_executor(None, self.tether.disconnect)
-            except Exception as e:
-                decky.logger.error(f"unload disconnect error: {e}")
+        # Take the lock so we never tear down while a connect() is mid-flight.
+        async with self._lock:
+            if self._active():
+                try:
+                    await self.loop.run_in_executor(None, self.tether.disconnect)
+                except Exception as e:
+                    decky.logger.error(f"unload disconnect error: {e}")
         decky.logger.info("Quest Tether backend unloaded")
 
     # --- ADB device monitor (fires on a background thread) ---
@@ -87,34 +91,40 @@ class Plugin:
     # --- Frontend-callable methods ---
 
     async def connect(self):
-        if self.busy:
-            return {"ok": False, "error": "busy"}
-        quest = await self.loop.run_in_executor(None, self.adb.find_quest)
-        if not quest or quest.get("status") != "device":
-            status = quest.get("status") if quest else "none"
-            return {"ok": False, "error": f"no authorized Quest ({status})"}
-        self.busy = True
-        try:
-            ok = await self.loop.run_in_executor(None, self.tether.connect, quest["serial"])
-            return {"ok": bool(ok), "error": "" if ok else self.tether.stats.last_error}
-        except Exception as e:
-            decky.logger.error(f"connect error: {e}")
-            return {"ok": False, "error": str(e)}
-        finally:
-            self.busy = False
+        # The lock serializes connect/disconnect so the monitor-thread auto-connect
+        # and a user tap can't both spawn gnirehtet (TOCTOU on the busy flag).
+        async with self._lock:
+            if self._active():
+                return {"ok": True, "error": ""}   # already up / coming up
+            quest = await self.loop.run_in_executor(None, self.adb.find_quest)
+            if not quest or quest.get("status") != "device":
+                status = quest.get("status") if quest else "none"
+                err = f"no authorized Quest ({status})"
+                self.tether.stats.last_error = err   # so the panel can surface it
+                return {"ok": False, "error": err}
+            self.busy = True
+            try:
+                ok = await self.loop.run_in_executor(None, self.tether.connect, quest["serial"])
+                return {"ok": bool(ok), "error": "" if ok else self.tether.stats.last_error}
+            except Exception as e:
+                decky.logger.error(f"connect error: {e}")
+                return {"ok": False, "error": str(e)}
+            finally:
+                self.busy = False
 
     async def disconnect(self):
-        if self.busy:
-            return {"ok": False, "error": "busy"}
-        self.busy = True
-        try:
-            await self.loop.run_in_executor(None, self.tether.disconnect)
-            return {"ok": True, "error": ""}
-        except Exception as e:
-            decky.logger.error(f"disconnect error: {e}")
-            return {"ok": False, "error": str(e)}
-        finally:
-            self.busy = False
+        async with self._lock:
+            if not self._active():
+                return {"ok": True, "error": ""}   # already down
+            self.busy = True
+            try:
+                await self.loop.run_in_executor(None, self.tether.disconnect)
+                return {"ok": True, "error": ""}
+            except Exception as e:
+                decky.logger.error(f"disconnect error: {e}")
+                return {"ok": False, "error": str(e)}
+            finally:
+                self.busy = False
 
     async def set_auto(self, enabled: bool):
         self.auto = bool(enabled)
@@ -128,10 +138,13 @@ class Plugin:
         q = self.quest
         start = self.tether._start_time
         connected = s.state == TetherState.CONNECTED
+        active = bool(self.tether._running) or s.state in (
+            TetherState.CONNECTED, TetherState.STARTING, TetherState.RECONNECTING)
         uptime = (time.time() - start) if (start and connected) else 0.0
         return {
             "state": s.state.value,
             "connected": connected,
+            "active": active,
             "busy": self.busy,
             "auto": self.auto,
             "adb_ok": self.adb_ok,

@@ -264,6 +264,7 @@ class TetherManager:
         self._log(f"Starting gnirehtet run ({self.relay_engine})...")
 
         if not self._spawn(serial):
+            self._running = False
             return False
 
         # Give it a moment, then check it didn't die immediately
@@ -271,6 +272,7 @@ class TetherManager:
         if self._process.poll() is not None:
             self._log("gnirehtet exited immediately — check adb + relay engine")
             self._set_state(TetherState.ERROR, "Process exited immediately")
+            self._running = False
             return False
 
         # Wait for tun0 to appear — gnirehtet run handles relay + tunnel + client
@@ -280,6 +282,7 @@ class TetherManager:
             if self._process.poll() is not None:
                 self._log("gnirehtet process died while waiting for tunnel")
                 self._set_state(TetherState.ERROR, "Process died during setup")
+                self._running = False
                 return False
             if self.adb.is_vpn_up(serial):
                 break
@@ -461,6 +464,10 @@ class TetherManager:
         # Kill the old process
         self._kill_process()
         time.sleep(self.RECONNECT_DELAY)
+
+        # A disconnect() may have fired during the delay — don't respawn if so.
+        if not self._running:
+            return
 
         # Check device is still on USB
         quest = self.adb.find_quest()

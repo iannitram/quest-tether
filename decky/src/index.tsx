@@ -17,6 +17,7 @@ import { FaWifi } from "react-icons/fa";
 interface Status {
   state: string;
   connected: boolean;
+  active: boolean;
   busy: boolean;
   auto: boolean;
   adb_ok: boolean;
@@ -67,6 +68,8 @@ const STATE_LABEL: Record<string, { text: string; color: string }> = {
 
 function Content() {
   const [st, setSt] = useState<Status | null>(null);
+  const [pending, setPending] = useState<boolean | null>(null); // optimistic tether target
+  const [uiError, setUiError] = useState<string>("");
 
   useEffect(() => {
     getStatus().then(setSt).catch(() => {});
@@ -74,21 +77,36 @@ function Content() {
     return () => removeEventListener("tether_status", listener);
   }, []);
 
-  const connected = st?.connected ?? false;
+  // Clear the optimistic target once the backend has caught up to it.
+  useEffect(() => {
+    if (pending !== null && st && !st.busy && st.active === pending) setPending(null);
+  }, [st, pending]);
+
+  const active = st?.active ?? false;
   const busy = st?.busy ?? false;
   const present = st?.quest_present ?? false;
   const unauthorized = st?.quest_status === "unauthorized";
   const stateInfo = STATE_LABEL[st?.state ?? "idle"] ?? STATE_LABEL.idle;
+  const tetherOn = pending ?? active;
 
   const onToggleTether = async (value: boolean) => {
-    if (value) await connectTether();
-    else await disconnectTether();
+    setPending(value);
+    setUiError("");
+    try {
+      const r = value ? await connectTether() : await disconnectTether();
+      if (!r.ok) { setUiError(r.error || "failed"); setPending(null); }
+    } catch (e) {
+      setUiError(String(e));
+      setPending(null);
+    }
   };
 
   let hint = "";
   if (st && !st.adb_ok) hint = "adb unavailable — check setup";
   else if (!present) hint = "Plug in your Quest via USB";
   else if (unauthorized) hint = "Unauthorized — accept the prompt in the headset";
+
+  const errText = uiError || (st && !active ? st.error : "");
 
   return (
     <PanelSection title="Quest Tether">
@@ -102,8 +120,8 @@ function Content() {
         <ToggleField
           label="Tether"
           description={hint || undefined}
-          checked={connected}
-          disabled={busy || !present || unauthorized}
+          checked={tetherOn}
+          disabled={busy || pending !== null || !present || unauthorized}
           onChange={onToggleTether}
         />
       </PanelSectionRow>
@@ -117,7 +135,7 @@ function Content() {
         />
       </PanelSectionRow>
 
-      {connected && st ? (
+      {active && st ? (
         <>
           <PanelSectionRow>
             <Field label="Down" focusable={false}>{fmtRate(st.rx_rate)}</Field>
@@ -146,10 +164,10 @@ function Content() {
         </>
       ) : null}
 
-      {st?.error && !connected ? (
+      {errText ? (
         <PanelSectionRow>
           <Field label="Error" focusable={false}>
-            <span style={{ color: "#ff4757" }}>{st.error}</span>
+            <span style={{ color: "#ff4757" }}>{errText}</span>
           </Field>
         </PanelSectionRow>
       ) : null}
