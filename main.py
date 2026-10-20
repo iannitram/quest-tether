@@ -373,7 +373,22 @@ class QuestTetherApp(ctk.CTk):
             command=self._toggle_auto_reconnect,
             width=36, height=18,
         )
-        self._auto_reconnect_switch.pack(side="right")
+        self._auto_reconnect_switch.pack(side="right", padx=(0, 8))
+
+        self._wifi_labels = {
+            "Headset Wi-Fi: off": "off",
+            "Headset Wi-Fi: match PC": "sync",
+            "Headset Wi-Fi: leave": "leave",
+        }
+        self._wifi_menu = ctk.CTkOptionMenu(
+            switches_frame, values=list(self._wifi_labels),
+            command=self._on_wifi_mode,
+            font=ctk.CTkFont(family="Segoe UI", size=10),
+            dropdown_font=ctk.CTkFont(family="Segoe UI", size=10),
+            width=150, height=20,
+        )
+        self._wifi_menu.set("Headset Wi-Fi: off")
+        self._wifi_menu.pack(side="right")
 
         # --- Connect / Disconnect Button ---
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -478,6 +493,9 @@ class QuestTetherApp(ctk.CTk):
                     text_color=COLORS["accent_green"],
                 )
                 self._log_panel.append(f"Quest detected: {model} ({serial})")
+                if not self._connected and not self._auto_connect_enabled:
+                    threading.Thread(target=self.tether.restore_wifi_if_flagged,
+                                     args=(serial,), daemon=True).start()
                 if not self._connected:
                     self._connect_btn.configure(state="normal")
                     if self._auto_connect_enabled and not self._auto_connect_pending:
@@ -608,6 +626,14 @@ class QuestTetherApp(ctk.CTk):
         self.tether.auto_reconnect = self._auto_reconnect_var.get()
         state = "on" if self._auto_reconnect_var.get() else "off"
         self._log_panel.append(f"Auto-reconnect {state}")
+
+    def _on_wifi_mode(self, label: str):
+        mode = self._wifi_labels[label]
+        self.tether.wifi_mode = mode
+        self._log_panel.append(f"Headset Wi-Fi policy: {mode}")
+        if self._connected:
+            threading.Thread(target=self.tether._apply_wifi_policy,
+                             args=(self.tether.stats.device_serial,), daemon=True).start()
 
     def _ui_refresh_loop(self):
         """1-second UI refresh."""
@@ -776,8 +802,41 @@ def _atexit_cleanup():
             pass
 
 
+_instance_mutex = None  # held for the life of the process
+
+
+def _acquire_single_instance() -> bool:
+    """Named-mutex guard. Two copies fight over relay port 31416 and kill each
+    other's relay every few seconds (the connect/reconnect loop). Returns False
+    if another instance already runs; brings its window forward if it can."""
+    global _instance_mutex
+    if os.name != "nt":
+        return True
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    handle = kernel32.CreateMutexW(None, False, "Local\\QuestTetherSingleInstance")
+    err = kernel32.GetLastError()
+    # 183 = already exists; 5 = exists but owned by a differently-elevated process
+    if err in (183, 5):
+        try:
+            user32 = ctypes.windll.user32
+            hwnd = user32.FindWindowW(None, "Quest Tether")
+            if hwnd:
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+        return False
+    _instance_mutex = handle
+    return True
+
+
 def main():
     global _app_instance
+    if not _acquire_single_instance():
+        logger.info("Quest Tether is already running — exiting")
+        sys.exit(0)
     start_minimized = "--minimized" in sys.argv
     app = QuestTetherApp(start_minimized=start_minimized)
     _app_instance = app

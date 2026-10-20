@@ -177,6 +177,27 @@ class ADBManager:
         )
         return result.returncode == 0
 
+    def start_gnirehtet_client(self, serial: str, port: int = 31416) -> bool:
+        """(Re)start the Quest-side VPN client: reverse tunnel + START intent.
+
+        Safe to call while the relay is running. `gnirehtet run` only tries this
+        once at launch, so a missed attempt leaves the relay up with no tunnel.
+        """
+        self.run_adb("-s", serial, "reverse", "localabstract:gnirehtet", f"tcp:{port}")
+        result = self.run_adb(
+            "-s", serial, "shell",
+            "am", "start",
+            "-n", "com.genymobile.gnirehtet/.GnirehtetActivity",
+            "-a", "com.genymobile.gnirehtet.START"
+        )
+        return result.returncode == 0
+
+    def restart_adb_server(self) -> None:
+        """Kill and restart the ADB server (clears wedged transports)."""
+        self.run_adb("kill-server", timeout=8)
+        time.sleep(1.0)
+        self.run_adb("start-server", timeout=15)
+
     def is_vpn_up(self, serial: str) -> bool:
         """Check if tun0 exists and has an IP — 1 ADB call."""
         result = self.run_adb("-s", serial, "shell", "ip", "addr", "show", "tun0")
