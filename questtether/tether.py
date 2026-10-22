@@ -77,9 +77,12 @@ class TetherManager:
         self._auto_reconnect = True
         self._reconnect_attempts = 0
 
-        # Where gnirehtet's own stdout/stderr go. DEVNULL by default; the CLI can
-        # set this to None (inherit) for --verbose relay logs.
+        # Where gnirehtet's own stdout/stderr go. DEVNULL means "log to
+        # ~/.questtether/relay.log" (a silent DEVNULL cost us the root cause of
+        # a failed client start, 2026-08-23); the CLI can set this to None
+        # (inherit) for --verbose relay logs.
         self.relay_output = subprocess.DEVNULL
+        self._relay_log_file = None
 
         self.stats = TetherStats()
         self._start_time: Optional[float] = None
@@ -164,11 +167,12 @@ class TetherManager:
         """Launch a gnirehtet run process for `serial`. Returns True on spawn."""
         self._kill_stale_process()
         cmd = self._build_run_cmd(serial)
+        out = self._relay_output_target()
         try:
             self._process = subprocess.Popen(
                 cmd,
-                stdout=self.relay_output,
-                stderr=self.relay_output,
+                stdout=out,
+                stderr=out,
                 env=self._relay_env(),
                 **ps.NEW_GROUP_KW,
             )
@@ -183,6 +187,25 @@ class TetherManager:
             self._log(f"Failed to start gnirehtet: {e}")
             self._set_state(TetherState.ERROR, str(e))
             return False
+
+    def _relay_output_target(self):
+        """Resolve where the relay's stdout/stderr go for this spawn.
+
+        DEVNULL (the default) is upgraded to ~/.questtether/relay.log so a
+        failed client start is never silent again; falls back to DEVNULL only
+        if the log file can't be opened."""
+        if self.relay_output is not subprocess.DEVNULL:
+            return self.relay_output
+        try:
+            log_dir = os.path.join(os.path.expanduser("~"), ".questtether")
+            os.makedirs(log_dir, exist_ok=True)
+            if self._relay_log_file:
+                self._relay_log_file.close()
+            self._relay_log_file = open(
+                os.path.join(log_dir, "relay.log"), "ab", buffering=0)
+            return self._relay_log_file
+        except Exception:
+            return subprocess.DEVNULL
 
     # --- Callbacks / logging ---
 
@@ -288,7 +311,27 @@ class TetherManager:
                 break
             self._log(f"Waiting for tun0... ({i + 1}/15)")
         else:
-            self._log("tun0 not detected yet — gnirehtet may still be setting up")
+            # gnirehtet run only tries the client start once; if the headset was
+            # asleep or adb hiccuped during enumeration, the relay is up but the
+            # tunnel never comes. Re-issue the start ourselves before giving up.
+            self._log("tun0 not detected — re-issuing client start...")
+            self.adb.start_gnirehtet_client(serial, self.RELAY_PORT)
+            for i in range(10):
+                time.sleep(1.5)
+                if self._process.poll() is not None:
+                    self._log("gnirehtet process died while waiting for tunnel")
+                    self._set_state(TetherState.ERROR, "Process died during setup")
+                    self._running = False
+                    return False
+                if self.adb.is_vpn_up(serial):
+                    self._log("Tunnel up after client restart")
+                    break
+                self._log(f"Waiting for tun0 (retry)... ({i + 1}/10)")
+            else:
+                self.stats.last_error = (
+                    "Tunnel not established — put the headset on and "
+                    "check for a VPN prompt")
+                self._log(self.stats.last_error)
 
         # Cache device details — only full ADB detail fetch of the session
         details = self.adb.get_device_details(serial)
@@ -387,9 +430,24 @@ class TetherManager:
             return
         self._log("Health monitor active")
 
+        tun_misses = 0
+        last_heal = 0.0
         while self._running:
             try:
-                self._update_stats(serial)
+                got_stats = self._update_stats(serial)
+
+                # Self-heal: relay alive but the Quest-side tunnel is gone (or
+                # never came up). Re-issue the client start, rate-limited.
+                if got_stats:
+                    tun_misses = 0
+                else:
+                    tun_misses += 1
+                    if (tun_misses >= 3 and self.is_relay_running()
+                            and time.time() - last_heal > 30.0):
+                        self._log("tun0 missing — re-issuing client start...")
+                        self.adb.start_gnirehtet_client(serial, self.RELAY_PORT)
+                        last_heal = time.time()
+                        tun_misses = 0
 
                 if not self.is_relay_running():
                     self._log("gnirehtet process died!")
@@ -404,8 +462,10 @@ class TetherManager:
 
             time.sleep(self.HEALTH_CHECK_INTERVAL)
 
-    def _update_stats(self, serial: str):
-        """Update throughput from tun0 interface stats and battery from ADB."""
+    def _update_stats(self, serial: str) -> bool:
+        """Update throughput from tun0 interface stats and battery from ADB.
+
+        Returns True if tun0 counters were readable (tunnel present)."""
         now = time.time()
 
         if self._start_time:
@@ -428,6 +488,10 @@ class TetherManager:
             self._prev_rx = rx
             self._prev_tx = tx
             self._prev_stat_time = now
+        else:
+            # No tunnel — don't leave a stale rate on the panel.
+            self.stats.rx_rate_bps = 0.0
+            self.stats.tx_rate_bps = 0.0
 
         # Battery — every ~2 min
         if now - self._last_battery_time >= self.BATTERY_POLL_INTERVAL:
@@ -445,6 +509,7 @@ class TetherManager:
 
         if self._on_stats_update:
             self._on_stats_update(self.stats)
+        return tun0 is not None
 
     # --- Auto-Reconnect ---
 

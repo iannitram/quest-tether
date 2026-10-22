@@ -136,6 +136,24 @@ class ADBManager:
 
         return info
 
+    def start_gnirehtet_client(self, serial: str, relay_port: int = 31416) -> bool:
+        """(Re)start the gnirehtet VPN client: wake device, reverse tunnel, start intent.
+
+        gnirehtet run only attempts this once at launch; if the headset is asleep
+        or adb hiccups during USB enumeration, that attempt fails silently and the
+        relay sits there with no tunnel. This lets us retry it ourselves.
+        """
+        self.run_adb("-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
+        self.run_adb("-s", serial, "reverse",
+                     "localabstract:gnirehtet", f"tcp:{relay_port}")
+        result = self.run_adb(
+            "-s", serial, "shell",
+            "am", "start",
+            "-n", "com.genymobile.gnirehtet/.GnirehtetActivity",
+            "-a", "com.genymobile.gnirehtet.START"
+        )
+        return result.returncode == 0
+
     def stop_gnirehtet_client(self, serial: str) -> bool:
         """Stop the gnirehtet VPN client on the device."""
         result = self.run_adb(
