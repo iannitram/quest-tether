@@ -58,7 +58,7 @@ flowchart LR
 ## Mac, PC and Linux
 
 - **Windows:** today's app. Keeps the Java relay (Rust relay carries no traffic there, #9).
-- **Linux (desktop and SteamOS):** the same window and tray (Tk and pystray work on Linux; pystray needs an AppIndicator on KDE/SteamOS), native relay, NetworkManager for Wi-Fi sync, USB access through a udev rule for the headset's vendor id (installing a udev rule is a system change: the owner's yes first).
+- **Linux (desktop and SteamOS):** the same window and tray (Tk and pystray work on Linux; pystray needs an AppIndicator on KDE/SteamOS), native relay, NetworkManager for Wi-Fi sync, USB access through a udev rule for the headset's vendor id. The Linux package installs the rule at install time with one visible sudo prompt and removes it on uninstall (the owner's ruling, 2026-10-26: "Install with the package"); the app never asks for root after that.
 - **SteamOS Game Mode:** the Decky plugin only (no window).
 - **Mac:** not supported (SPEC Won'ts).
 - **CI:** byte-compile everything and run `tests/` on Windows and Linux.
