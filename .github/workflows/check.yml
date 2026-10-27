@@ -1,5 +1,6 @@
 # Checks on every push and pull request, on the two supported OSes (SPEC: Windows and Linux).
 # No headset here: byte-compile everything and run the unit tests in tests/.
+# Runs on the self-hosted Hyperion runners (R29); the Windows runner uses its own Python 3.12.
 name: check
 on:
   push:
@@ -10,11 +11,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          - os: windows
+            runner: [self-hosted, windows]
+          - os: linux
+            runner: [self-hosted, linux]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        if: runner.os != 'Windows' || runner.environment == 'github-hosted'
         with:
           python-version: "3.11"
       - name: Byte-compile
