@@ -1,0 +1,23 @@
+# Checks on every push and pull request, on the two supported OSes (SPEC: Windows and Linux).
+# No headset here: byte-compile everything and run the unit tests in tests/.
+name: check
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Byte-compile
+        run: python -m compileall -q -x "build|dist" .
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
