@@ -1,9 +1,9 @@
-Stage: Spec
+Stage: Dev Loop
 Since: 2026-10-26
 Kind: own
-Spec: not yet   Roadmap: none yet   Code map: none yet
-Platforms: windows
-Notes: Un-parked 2026-10-26 by the owner; at Spec until a spec is agreed with the owner (board had it at Prototype / Beta, no spec yet). Windows desktop app that tethers a Meta Quest over USB. Notes in docs/notes/. adb.exe is not stored in the repo (README).
+Spec: SPEC.md (approved 2026-10-26)   Roadmap: docs/code-map.md "Dev stages to 1.0"   Code map: docs/code-map.md
+Platforms: windows, linux (SteamOS Desktop Mode + a Decky plugin in Game Mode); no Mac
+Notes: Windows-only app becoming Windows + Linux + Decky: platform layer #13 (Windows) -> #14 (Linux) -> #15 (switch callers), then #16 native relay, #17 udev, #18 qtetherd service (Hard), #19/#20 Decky, #21 Linux package. Start with #11, #1, #4. Device checks (#2, #3, #6-#9) need the headset (needs-owner-device). CI: Windows and Linux.
 
 Stages: Proposal -> Spec -> Roadmap -> Dev Loop -> Prototype / Beta.
 What each stage means and who moves a project: `PIPELINE.md` in the owner's private pipeline repo.

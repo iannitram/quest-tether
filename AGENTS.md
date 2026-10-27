@@ -13,5 +13,5 @@ Everything you need to work here is in this repo. The full pipeline and rules (`
 
 ## This project
 
-- Windows only. Notes, setup guide and bug log: `docs/notes/`.
-- `tools/adb.exe` is not stored here: get Google's platform-tools and put it in `tools/` before building.
+- Windows and Linux (SteamOS, with a Decky plugin): spec `SPEC.md`, code map `docs/code-map.md`. OS differences go only in `qt_platform/`. Notes, setup guide and bug log: `docs/notes/`.
+- Tool binaries (adb, gnirehtet, the APK) are never committed: `tools/README.md` says where they come from.
