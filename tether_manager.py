@@ -54,6 +54,7 @@ class TetherStats:
     vpn_ip: str = ""
     battery_level: str = ""
     battery_status: str = ""
+    battery_temp_c: Optional[float] = None
 
 
 class TetherManager:
@@ -397,7 +398,7 @@ class TetherManager:
         self.stats.vpn_ip = details.get("vpn_ip", "")
         self.stats.battery_level = details.get("battery_level", "")
         self.stats.battery_status = details.get("battery_status", "")
-        self._last_battery_time = time.time()
+        self._last_battery_time = 0.0  # read the temperature on the first health cycle
 
         self._set_state(_state_for_tunnel(tun0_present))
         self._start_time = time.time()
@@ -650,6 +651,12 @@ class TetherManager:
                         status_map = {"1": "Unknown", "2": "Charging", "3": "Discharging",
                                       "4": "Not Charging", "5": "Full"}
                         self.stats.battery_status = status_map.get(status_code, status_code)
+                    elif "temperature:" in line:
+                        temp_raw = line.split(":")[-1].strip()
+                        try:
+                            self.stats.battery_temp_c = float(temp_raw) / 10.0
+                        except ValueError:
+                            self.stats.battery_temp_c = None
 
         if self._on_stats_update:
             self._on_stats_update(self.stats)
@@ -807,3 +814,14 @@ class TetherManager:
             self._log("Device did not reconnect within timeout")
             self._set_state(TetherState.ERROR, "Device did not reconnect")
             self._running = False
+
+
+def temperature_zone(temp_c: Optional[float]) -> str:
+    """Zone for a battery temperature in C: green below 38, yellow 38-42, red above 42, unknown for None."""
+    if temp_c is None:
+        return "unknown"
+    if temp_c < 38.0:
+        return "green"
+    if temp_c <= 42.0:
+        return "yellow"
+    return "red"

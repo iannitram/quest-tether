@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import customtkinter as ctk
 from adb_manager import ADBManager
-from tether_manager import TetherManager, TetherState, TetherStats
+from tether_manager import TetherManager, TetherState, TetherStats, temperature_zone
 
 # System tray — graceful degradation if not installed
 try:
@@ -171,7 +171,7 @@ class DeviceInfoPanel(ctk.CTkFrame):
         self._info_frame.pack(fill="x", padx=12, pady=(0, 8))
 
         self._fields = {}
-        for label in ["Model", "Serial", "Battery", "VPN IP"]:
+        for label in ["Model", "Serial", "Battery", "Temperature", "VPN IP"]:
             row = ctk.CTkFrame(self._info_frame, fg_color="transparent")
             row.pack(fill="x", pady=1)
 
@@ -197,11 +197,20 @@ class DeviceInfoPanel(ctk.CTkFrame):
         if stats.battery_status and stats.battery_status != "Unknown":
             batt = f"{batt} ({stats.battery_status})"
         self._fields["Battery"].configure(text=batt)
+        # Add temperature display
+        if stats.battery_temp_c is not None:
+            temp_c = stats.battery_temp_c
+            temp_str = f"{temp_c:.1f}°C"
+            color = {"green": COLORS["accent_green"], "yellow": COLORS["accent_yellow"],
+                     "red": COLORS["error"]}.get(temperature_zone(temp_c), COLORS["text_primary"])
+            self._fields["Temperature"].configure(text=temp_str, text_color=color)
+        else:
+            self._fields["Temperature"].configure(text="\u2014", text_color=COLORS["text_primary"])
         self._fields["VPN IP"].configure(text=stats.vpn_ip or "\u2014")
 
     def clear(self):
         for val in self._fields.values():
-            val.configure(text="\u2014")
+            val.configure(text="\u2014", text_color=COLORS["text_primary"])
 
 
 class LogPanel(ctk.CTkFrame):
