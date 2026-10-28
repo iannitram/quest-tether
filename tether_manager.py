@@ -398,7 +398,7 @@ class TetherManager:
         self.stats.vpn_ip = details.get("vpn_ip", "")
         self.stats.battery_level = details.get("battery_level", "")
         self.stats.battery_status = details.get("battery_status", "")
-        self._last_battery_time = time.time()
+        self._last_battery_time = 0.0  # read the temperature on the first health cycle
 
         self._set_state(_state_for_tunnel(tun0_present))
         self._start_time = time.time()
@@ -815,26 +815,13 @@ class TetherManager:
             self._set_state(TetherState.ERROR, "Device did not reconnect")
             self._running = False
 
-    @staticmethod
-    def temperature_zone(temp_c: Optional[float]) -> str:
-        """Return the temperature zone for a given temperature in Celsius.
-        
-        Args:
-            temp_c: Temperature in Celsius, or None if unavailable
-            
-        Returns:
-            "green" for <38°C, "yellow" for 38-42°C, "red" for >42°C, 
-            "unknown" for None or invalid values
-        """
-        if temp_c is None:
-            return "unknown"
-        if temp_c < 38.0:
-            return "green"
-        elif temp_c <= 42.0:
-            return "yellow"
-        else:
-            return "red"
 
-
-# Export temperature_zone at module level for direct import
-temperature_zone = TetherManager.temperature_zone
+def temperature_zone(temp_c: Optional[float]) -> str:
+    """Zone for a battery temperature in C: green below 38, yellow 38-42, red above 42, unknown for None."""
+    if temp_c is None:
+        return "unknown"
+    if temp_c < 38.0:
+        return "green"
+    if temp_c <= 42.0:
+        return "yellow"
+    return "red"

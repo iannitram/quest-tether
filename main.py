@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import customtkinter as ctk
 from adb_manager import ADBManager
-from tether_manager import TetherManager, TetherState, TetherStats
+from tether_manager import TetherManager, TetherState, TetherStats, temperature_zone
 
 # System tray — graceful degradation if not installed
 try:
@@ -201,13 +201,8 @@ class DeviceInfoPanel(ctk.CTkFrame):
         if stats.battery_temp_c is not None:
             temp_c = stats.battery_temp_c
             temp_str = f"{temp_c:.1f}°C"
-            # Set color based on temperature zone
-            if temp_c < 38.0:
-                color = COLORS["accent_green"]
-            elif temp_c <= 42.0:
-                color = COLORS["accent_yellow"]
-            else:
-                color = COLORS["error"]
+            color = {"green": COLORS["accent_green"], "yellow": COLORS["accent_yellow"],
+                     "red": COLORS["error"]}.get(temperature_zone(temp_c), COLORS["text_primary"])
             self._fields["Temperature"].configure(text=temp_str, text_color=color)
         else:
             self._fields["Temperature"].configure(text="\u2014", text_color=COLORS["text_primary"])
