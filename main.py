@@ -171,7 +171,7 @@ class DeviceInfoPanel(ctk.CTkFrame):
         self._info_frame.pack(fill="x", padx=12, pady=(0, 8))
 
         self._fields = {}
-        for label in ["Model", "Serial", "Battery", "VPN IP"]:
+        for label in ["Model", "Serial", "Battery", "Temperature", "VPN IP"]:
             row = ctk.CTkFrame(self._info_frame, fg_color="transparent")
             row.pack(fill="x", pady=1)
 
@@ -197,6 +197,20 @@ class DeviceInfoPanel(ctk.CTkFrame):
         if stats.battery_status and stats.battery_status != "Unknown":
             batt = f"{batt} ({stats.battery_status})"
         self._fields["Battery"].configure(text=batt)
+        # Add temperature display
+        if stats.battery_temp_c is not None:
+            temp_c = stats.battery_temp_c
+            temp_str = f"{temp_c:.1f}°C"
+            # Set color based on temperature zone
+            if temp_c < 38.0:
+                color = COLORS["accent_green"]
+            elif temp_c <= 42.0:
+                color = COLORS["accent_yellow"]
+            else:
+                color = COLORS["error"]
+            self._fields["Temperature"].configure(text=temp_str, text_color=color)
+        else:
+            self._fields["Temperature"].configure(text="\u2014", text_color=COLORS["text_primary"])
         self._fields["VPN IP"].configure(text=stats.vpn_ip or "\u2014")
 
     def clear(self):
