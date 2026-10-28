@@ -1,6 +1,6 @@
 # Code map
 
-What each part owns, who calls whom, and how a Windows-only app becomes Windows + Linux + a Decky plugin (SPEC M6-M9). Read from the tree on 2026-10-26 (checked again that night against `main`: no pull request merged yet, so the skeleton is all that is new). Spec: [../SPEC.md](../SPEC.md). Background and measured facts: [notes/](notes/).
+What each part owns, who calls whom, and how a Windows-only app becomes Windows + Linux + a Decky plugin (SPEC M6-M9). Describes commit: `6907b8a` (2026-10-28). Checked against `main` on 2026-10-28: the skeleton is still all that is new; the only pull request merged so far (#22) moved CI to the self-hosted runners and changed no application code. Spec: [../SPEC.md](../SPEC.md). Background and measured facts: [notes/](notes/).
 
 ## Layout
 
@@ -10,12 +10,12 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `tether_manager.py` | `TetherManager` + `TetherState` + `TetherStats`: the relay process (`gnirehtet run`), connect/disconnect, health monitor and heal, auto-reconnect, stats, the headset Wi-Fi policy. The tether core. | present (Windows calls inside: `netstat`, `taskkill`, PowerShell, `CREATE_NO_WINDOW`, `%LOCALAPPDATA%`) | M1-M5 |
 | `net_sync.py` | Copy the PC's Wi-Fi network to the headset: PC SSID and key from `netsh wlan`, then `cmd wifi` on the headset. | present (Windows only) | M5, M7 |
 | `main.py` | The desktop window (CustomTkinter), dashboard, log panel, tray (pystray + Pillow), single-instance guard (Windows named mutex), `--minimized`. | present | M4, M6 |
-| `qt_platform/` | **New.** The platform layer: everything that differs by OS behind one interface (`base.py`), with `windows.py` and `linux.py`; `current()` picks one. | stubs | M6, M7 |
-| `qtetherd.py` | **New.** Linux user service that owns the one tether (core in-process) and answers JSON requests on `127.0.0.1` (status, connect, disconnect). Clients: the desktop window on Linux, the Decky plugin. | stub | M7, M8 |
+| `qt_platform/` | **New.** The platform layer: everything that differs by OS behind one interface (`base.py`: the `Platform` class, every method raises `NotImplementedError`), with `windows.py` (`WindowsPlatform`) and `linux.py` (`LinuxPlatform`), both empty stubs that set only `name`; `current()` in `__init__.py` picks one (done: Windows, Linux, else `RuntimeError`). Nothing calls it yet. | interface and `current()` present; both implementations are stubs | M6, M7 |
+| `qtetherd.py` | **New.** Linux user service that owns the one tether (core in-process) and answers JSON requests on `127.0.0.1:31417` (status, connect, disconnect; the relay's own port is 31416). Clients: the desktop window on Linux, the Decky plugin. | stub | M7, M8 |
 | `decky/` | **New.** The Decky Loader plugin: `plugin.json`, a Python backend (`main.py`) that is a client of `qtetherd`, and the Quick Access panel (`src/index.tsx`). | stubs | M8 |
 | `build.spec`, `build.bat` | PyInstaller one-file EXE (Windows). Linux packaging joins it (#10 and the Linux package issue). | present | M9 |
 | `tools/` | Third-party binaries at run time (adb, relay, headset APK). Supplied by the package, never committed (#11). Four are still tracked: `AdbWinApi.dll`, `AdbWinUsbApi.dll`, `gnirehtet.jar`, `gnirehtet.apk`. | to clean (#11) | M9 |
-| `tests/` | **New.** Unit tests that need no headset (platform selection, temperature zones, parsing). `test_platform.py` (platform selection) is there; the rest arrive with their issues (#4, #17, #19, ...). | present (1 file) | all |
+| `tests/` | **New.** Unit tests that need no headset (platform selection, temperature zones, parsing). `test_platform.py` (platform selection) is there; the rest arrive with their issues (#4, #17, #19, ...). CI runs them with `python -m unittest discover -s tests`. | present (1 file) | all |
 
 ## The platform layer (`qt_platform/base.py`)
 
@@ -28,7 +28,7 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `stale_relay_pids(port)` / `kill(pid)` | `netstat -ano` + PowerShell command line + `taskkill` (today's code) | `ss -ltnp` (or `/proc/net/tcp` + `/proc/<pid>/cmdline`) + `os.kill` |
 | `pc_wifi()` -> `(ssid, key)` | `netsh wlan show interfaces` / `show profile key=clear` (today's `net_sync`) | `nmcli -t -f active,ssid dev wifi` / `nmcli -s -g 802-11-wireless-security.psk connection show <ssid>` |
 | `single_instance(name)` | named mutex `Local\QuestTetherSingleInstance` (today's code) | a lock file in `data_dir()` (`fcntl.flock`) |
-| `autostart_get/set(on)` | `HKCU\...\Run` value with `--minimized` | `~/.config/autostart/quest-tether.desktop` with `--minimized` |
+| `autostart()` / `set_autostart(on)` | `HKCU\...\Run` value with `--minimized` | `~/.config/autostart/quest-tether.desktop` with `--minimized` |
 
 Callers stop testing `os.name` and call `qt_platform.current()`.
 
@@ -61,7 +61,7 @@ flowchart LR
 - **Linux (desktop and SteamOS):** the same window and tray (Tk and pystray work on Linux; pystray needs an AppIndicator on KDE/SteamOS), native relay, NetworkManager for Wi-Fi sync, USB access through a udev rule for the headset's vendor id. The Linux package installs the rule at install time with one visible sudo prompt and removes it on uninstall (the owner's ruling, 2026-10-26: "Install with the package"); the app never asks for root after that.
 - **SteamOS Game Mode:** the Decky plugin only (no window).
 - **Mac:** not supported (SPEC Won'ts).
-- **CI:** byte-compile everything and run `tests/` on Windows and Linux.
+- **CI:** `.github/workflows/check.yml` byte-compiles everything (`compileall`) and runs `tests/` on Windows and Linux, on the self-hosted runners; push to `main` and every pull request. No Mac job, by design.
 
 ## Open-source pieces
 
@@ -72,7 +72,7 @@ flowchart LR
 
 ## Dev stages to 1.0
 
-Where it stands (2026-10-26): Dev Loop, nothing past the skeleton built. Open issues #1-#21 (#12 is the goals-and-rules note, #5 is after-1.0); no pull request merged or open.
+Where it stands (2026-10-28): Dev Loop, nothing past the skeleton built. Open issues #1-#21 (#12 is the goals-and-rules note, #5 is after-1.0); no pull request is open, and the one merged (#22) is CI only.
 
 1. Clean the repo and package (#11, then #10); CI on Windows and Linux (CI done). Not started.
 2. Fix the honest Connected state (#1) and add battery temperature (#4). Not started.
