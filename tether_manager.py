@@ -32,6 +32,11 @@ class TetherState(Enum):
     ERROR = "error"
 
 
+def _state_for_tunnel(tun0_present: bool) -> TetherState:
+    """Return the user-visible state supported by the current tunnel check."""
+    return TetherState.CONNECTED if tun0_present else TetherState.STARTING
+
+
 @dataclass
 class TetherStats:
     """Live connection statistics."""
@@ -361,6 +366,7 @@ class TetherManager:
 
         # Wait for tun0 to appear — gnirehtet run handles relay + tunnel + client
         self._log("Waiting for VPN tunnel...")
+        tun0_present = False
         for i in range(15):
             time.sleep(1.5)
             if self._process.poll() is not None:
@@ -368,6 +374,7 @@ class TetherManager:
                 self._set_state(TetherState.ERROR, "Process died during setup")
                 return False
             if self.adb.is_vpn_up(serial):
+                tun0_present = True
                 break
             self._log(f"Waiting for tun0... ({i + 1}/15)")
         else:
@@ -378,6 +385,7 @@ class TetherManager:
             for i in range(8):
                 time.sleep(1.5)
                 if self.adb.is_vpn_up(serial):
+                    tun0_present = True
                     self._log("tun0 up after client re-start")
                     break
             else:
@@ -391,7 +399,7 @@ class TetherManager:
         self.stats.battery_status = details.get("battery_status", "")
         self._last_battery_time = time.time()
 
-        self._set_state(TetherState.CONNECTED)
+        self._set_state(_state_for_tunnel(tun0_present))
         self._start_time = time.time()
         self._log("Tethering active!")
 
@@ -500,6 +508,9 @@ class TetherManager:
                     continue
 
                 # Relay alive: is the tunnel actually there?
+                tunnel_state = _state_for_tunnel(tun_ok)
+                if self.stats.state != tunnel_state:
+                    self._set_state(tunnel_state)
                 if tun_ok:
                     self._tun_misses = 0
                     self._heals_in_row = 0
