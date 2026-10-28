@@ -1,6 +1,6 @@
 # Code map
 
-What each part owns, who calls whom, and how a Windows-only app becomes Windows + Linux + a Decky plugin (SPEC M6-M9). Describes commit: `6907b8a` (2026-10-28). Checked against `main` on 2026-10-28: the skeleton is still all that is new; the only pull request merged so far (#22) moved CI to the self-hosted runners and changed no application code. Spec: [../SPEC.md](../SPEC.md). Background and measured facts: [notes/](notes/).
+What each part owns, who calls whom, and how a Windows-only app becomes Windows + Linux + a Decky plugin (SPEC M6-M9). Describes commit: `6907b8a` (2026-10-28). Checked against `main` on 2026-10-28: the skeleton is still all that is new; the only pull request merged so far (#22) moved CI to our own runners (replaced by GitHub-hosted runners in #25) and changed no application code. Spec: [../SPEC.md](../SPEC.md). Background and measured facts: [notes/](notes/).
 
 ## Layout
 
@@ -61,7 +61,7 @@ flowchart LR
 - **Linux (desktop and SteamOS):** the same window and tray (Tk and pystray work on Linux; pystray needs an AppIndicator on KDE/SteamOS), native relay, NetworkManager for Wi-Fi sync, USB access through a udev rule for the headset's vendor id. The Linux package installs the rule at install time with one visible sudo prompt and removes it on uninstall (the owner's ruling, 2026-10-26: "Install with the package"); the app never asks for root after that.
 - **SteamOS Game Mode:** the Decky plugin only (no window).
 - **Mac:** not supported (SPEC Won'ts).
-- **CI:** `.github/workflows/check.yml` byte-compiles everything (`compileall`) and runs `tests/` on Windows and Linux, on the self-hosted runners; push to `main` and every pull request. No Mac job, by design.
+- **CI:** `.github/workflows/check.yml` byte-compiles everything (`compileall`) and runs `tests/` on Windows and Linux, on GitHub-hosted runners (`windows-latest`, `ubuntu-latest`); push to `main` and every pull request. No Mac job, by design.
 
 ## Open-source pieces
 
