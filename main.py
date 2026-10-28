@@ -462,6 +462,10 @@ class QuestTetherApp(ctk.CTk):
         else:
             self._log_panel.append("Gnirehtet relay not found!")
 
+        devices = self.adb.get_devices()
+        if any(d.get("state") == "no-permission" for d in devices):
+            self._log_panel.append("USB access needs the udev rule: see docs/linux.md")
+
         quest = self.adb.find_quest()
         if quest and quest["status"] == "device":
             self._on_device_connected(quest)
