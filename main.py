@@ -551,6 +551,7 @@ class QuestTetherApp(ctk.CTk):
                     state="normal",
                 )
             elif state in (TetherState.STARTING, TetherState.STOPPING):
+                self._connected = False
                 self._connect_btn.configure(state="disabled")
 
             if state == TetherState.ERROR and stats.last_error:
