@@ -12,11 +12,6 @@ class ConnectStateTests(unittest.TestCase):
     def test_tun0_present_is_connected(self):
         self.assertEqual(_state_for_tunnel(True), TetherState.CONNECTED)
 
-    def test_health_poll_can_promote_state_when_tun0_appears(self):
-        state = _state_for_tunnel(False)
-        state = _state_for_tunnel(True)
-        self.assertEqual(state, TetherState.CONNECTED)
-
 
 if __name__ == "__main__":
     unittest.main()

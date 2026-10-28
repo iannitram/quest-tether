@@ -78,6 +78,30 @@ class ConnectFlowTests(unittest.TestCase):
         self.assertEqual(states, [TetherState.STARTING, TetherState.CONNECTED],
                          "health loop should stay STARTING while tun0 is missing, then promote")
 
+    def test_health_loop_demotes_when_tunnel_disappears(self):
+        manager = self.make_manager([])
+        manager.adb.get_tun0_stats.return_value = None
+        manager.adb.run_adb.return_value.returncode = 1
+        manager.POST_CONNECT_COOLDOWN = 0
+        manager._wifi_mode = "leave"
+        manager._auto_reconnect = False
+        manager._heal = Mock()
+        states = []
+        manager.set_callbacks(on_state_change=lambda state, stats: states.append(state))
+        manager._set_state(TetherState.CONNECTED)
+
+        manager._running = True
+        self.addCleanup(setattr, manager, "_running", False)
+        with patch("tether_manager.time.sleep",
+                   side_effect=lambda _: setattr(manager, "_running", False)):
+            manager._health_loop("quest-serial")
+
+        manager.adb.get_tun0_stats.assert_called_once_with("quest-serial")
+        manager._heal.assert_not_called()
+        self.assertEqual(manager.stats.state, TetherState.STARTING,
+                         "health loop must demote CONNECTED when tun0 disappears")
+        self.assertEqual(states, [TetherState.CONNECTED, TetherState.STARTING])
+
 
 if __name__ == "__main__":
     unittest.main()

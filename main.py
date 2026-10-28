@@ -552,7 +552,12 @@ class QuestTetherApp(ctk.CTk):
                 )
             elif state in (TetherState.STARTING, TetherState.STOPPING):
                 self._connected = False
-                self._connect_btn.configure(state="disabled")
+                self._connect_btn.configure(
+                    text="Connect", height=38,
+                    font=ctk.CTkFont(family="Segoe UI Semibold", size=14),
+                    fg_color=COLORS["accent"], hover_color="#c73e52",
+                    state="disabled",
+                )
 
             if state == TetherState.ERROR and stats.last_error:
                 self._log_panel.append(f"ERROR: {stats.last_error}")
