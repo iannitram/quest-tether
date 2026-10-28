@@ -15,6 +15,50 @@ from typing import Optional, Callable, Dict, List
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
+def parse_devices(text: str) -> List[Dict[str, str]]:
+    """Parse output of 'adb devices' or 'adb devices -l'."""
+    devices = []
+    if not text:
+        return devices
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("List of devices attached") or line.startswith("* daemon"):
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        serial = parts[0]
+        if len(parts) >= 2 and (
+            (parts[1] == "no" and len(parts) >= 3 and parts[2].startswith("permission"))
+            or parts[1].startswith("no-permission")
+            or "no permissions" in line
+        ):
+            devices.append({
+                "serial": serial,
+                "state": "no-permission",
+            })
+            continue
+
+        if len(parts) >= 2:
+            status = parts[1]
+            info = {}
+            for part in parts[2:]:
+                if ":" in part:
+                    key, val = part.split(":", 1)
+                    info[key] = val
+            devices.append({
+                "serial": serial,
+                "status": status,
+                "model": info.get("model", "Unknown"),
+                "device": info.get("device", "Unknown"),
+                "product": info.get("product", "Unknown"),
+                "transport_id": info.get("transport_id", ""),
+            })
+
+    return devices
+
+
 class ADBManager:
     """Manages ADB connections to Quest devices."""
 
@@ -90,32 +134,9 @@ class ADBManager:
     def get_devices(self) -> List[Dict[str, str]]:
         """List connected ADB devices with their status."""
         result = self.run_adb("devices", "-l")
-        devices = []
         if result.returncode != 0:
-            return devices
-
-        for line in result.stdout.strip().split("\n")[1:]:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split()
-            if len(parts) >= 2:
-                serial = parts[0]
-                status = parts[1]
-                info = {}
-                for part in parts[2:]:
-                    if ":" in part:
-                        key, val = part.split(":", 1)
-                        info[key] = val
-                devices.append({
-                    "serial": serial,
-                    "status": status,
-                    "model": info.get("model", "Unknown"),
-                    "device": info.get("device", "Unknown"),
-                    "product": info.get("product", "Unknown"),
-                    "transport_id": info.get("transport_id", ""),
-                })
-        return devices
+            return []
+        return parse_devices(result.stdout)
 
     def find_quest(self) -> Optional[Dict[str, str]]:
         """Find a connected Quest device."""
@@ -131,7 +152,7 @@ class ADBManager:
             if "quest" in combined or "oculus" in combined or "meta" in combined:
                 return dev
 
-        usb_devices = [d for d in devices if d["status"] == "device" and not d["serial"].startswith("emulator")]
+        usb_devices = [d for d in devices if d.get("status") == "device" and not d.get("serial", "").startswith("emulator")]
         if len(usb_devices) == 1:
             return usb_devices[0]
 
@@ -283,12 +304,12 @@ class ADBManager:
         while self._monitoring:
             try:
                 quest = self.find_quest()
-                if quest and quest["status"] == "device":
+                if quest and quest.get("status") == "device":
                     if self._current_serial != quest["serial"]:
                         self._current_serial = quest["serial"]
                         if self._on_device_connected:
                             self._on_device_connected(quest)
-                elif quest and quest["status"] == "unauthorized":
+                elif quest and quest.get("status") == "unauthorized":
                     if self._current_serial != quest["serial"]:
                         self._current_serial = quest["serial"]
                         quest["_unauthorized"] = True
