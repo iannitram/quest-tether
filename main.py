@@ -210,7 +210,7 @@ class DeviceInfoPanel(ctk.CTkFrame):
 
     def clear(self):
         for val in self._fields.values():
-            val.configure(text="\u2014")
+            val.configure(text="\u2014", text_color=COLORS["text_primary"])
 
 
 class LogPanel(ctk.CTkFrame):
