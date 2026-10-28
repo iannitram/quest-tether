@@ -1,0 +1,12 @@
+
+There is 1 interface on the system: 
+
+    Name                   : Wi-Fi
+    Description            : Example Wireless Adapter
+    GUID                   : 00000000-0000-0000-0000-000000000000
+    Physical address       : 00:00:00:00:00:00
+    Interface type         : Primary
+    State                  : disconnected
+    Radio status           : Hardware On
+                             Software On
+
