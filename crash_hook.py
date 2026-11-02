@@ -68,8 +68,8 @@ def _report(sink: Callable[[type, BaseException, Any], None], exc_type: type, ex
     # Report through sink
     try:
         sink(exc_type, exc, tb)
-    except Exception:
-        # If sink fails, don't let it stop the original hook
+    except BaseException:
+        # If sink fails (even with SystemExit or KeyboardInterrupt), don't let it stop the original hook
         pass
 
 
