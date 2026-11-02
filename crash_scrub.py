@@ -11,13 +11,13 @@ def scrub(text: str, home: str, hostname: str, extra: Sequence[str] = ()) -> str
             text = text.replace(value, "<redacted>")
     text = re.sub(
         r"((?:password|passwd|passphrase|psk|secret|token|api[_-]?key|"
-        r"serialno|serial|key content)s?)[\"']?\s*[:=]\s*(?!<redacted>)"
-        r"(?:\"[^\"]*\"|'[^']*'|\S+)",
+        r"serialno|serial|key content)s?)[\"']?[ \t]*[:=][ \t]*(?!<redacted>)"
+        r"(?:\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'|\S+)",
         r"\1=<redacted>",
         text,
         flags=re.IGNORECASE,
     )
-    text = re.sub(r"(?<!\S)-s\s+\S+", "-s <serial>", text)
+    text = re.sub(r"(?<!\S)-s[ \t]+\S+", "-s <serial>", text)
     text = re.sub(
         r"\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b|"
         r"\b(?:[0-9a-f]{2}-){5}[0-9a-f]{2}\b",
