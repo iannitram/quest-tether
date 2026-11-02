@@ -11,6 +11,21 @@ def parse_active_ssid(text: str) -> Optional[str]:
     return None
 
 
+def parse_active_wifi_connection(text: str) -> Optional[str]:
+    """Return the name of the first active Wi-Fi connection from `nmcli -t -f name,type`."""
+    suffix = ":802-11-wireless"
+    for line in text.splitlines():
+        if line.endswith(suffix) and len(line) > len(suffix):
+            return re.sub(r"\\(.)", r"\1", line[: -len(suffix)])
+    return None
+
+
+def parse_ssid_field(text: str) -> Optional[str]:
+    """Return the first line of `nmcli -g 802-11-wireless.ssid`, decoding terse-mode escapes."""
+    lines = text.splitlines()
+    return (re.sub(r"\\(.)", r"\1", lines[0]) or None) if lines else None
+
+
 def parse_psk(text: str) -> Optional[str]:
     """Return the first key line, preserving its leading and trailing spaces."""
     lines = text.splitlines()

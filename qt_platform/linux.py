@@ -12,7 +12,8 @@ from typing import List, Optional, Sequence, Tuple
 
 from . import linux_paths
 from .base import Platform
-from .linux_parse import cmdline_mentions_gnirehtet, parse_active_ssid, parse_psk, parse_ss_pids
+from .linux_parse import (cmdline_mentions_gnirehtet, parse_active_wifi_connection, parse_psk,
+                          parse_ss_pids, parse_ssid_field)
 
 log = logging.getLogger(__name__)
 
@@ -74,11 +75,16 @@ class LinuxPlatform(Platform):
         os.kill(pid, 9)
 
     def pc_wifi(self) -> Optional[Tuple[str, str]]:
-        ssid = parse_active_ssid(_run(["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"]))
+        name = parse_active_wifi_connection(_run(["nmcli", "-t", "-f", "name,type",
+                                                  "connection", "show", "--active"]))
+        if not name:
+            return None
+        ssid = parse_ssid_field(_run(["nmcli", "-g", "802-11-wireless.ssid",
+                                      "connection", "show", name]))
         if not ssid:
             return None
         key = parse_psk(_run(["nmcli", "-s", "-g", "802-11-wireless-security.psk",
-                              "connection", "show", ssid]))
+                              "connection", "show", name]))
         if not key:
             return None
         return (ssid, key)

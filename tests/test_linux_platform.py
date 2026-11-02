@@ -82,19 +82,40 @@ class PcWifi(unittest.TestCase):
     def fake_run(self, answers):
         return mock.patch.object(linux, "_run", side_effect=lambda args, *a, **k: answers.get(tuple(args), ""))
 
-    ACTIVE = ("nmcli", "-t", "-f", "active,ssid", "dev", "wifi")
-    PSK = ("nmcli", "-s", "-g", "802-11-wireless-security.psk", "connection", "show", "ExampleNet")
+    ACTIVE = ("nmcli", "-t", "-f", "name,type", "connection", "show", "--active")
+
+    @staticmethod
+    def ssid(name):
+        return ("nmcli", "-g", "802-11-wireless.ssid", "connection", "show", name)
+
+    @staticmethod
+    def psk(name):
+        return ("nmcli", "-s", "-g", "802-11-wireless-security.psk", "connection", "show", name)
 
     def test_ssid_and_key(self):
-        with self.fake_run({self.ACTIVE: "no:Other\nyes:ExampleNet\n", self.PSK: "example-pass\n"}):
+        with self.fake_run({self.ACTIVE: "lo:loopback\nExampleNet:802-11-wireless\n",
+                            self.ssid("ExampleNet"): "ExampleNet\n",
+                            self.psk("ExampleNet"): "example-pass\n"}):
+            self.assertEqual(LinuxPlatform().pc_wifi(), ("ExampleNet", "example-pass"))
+
+    def test_connection_name_differs_from_ssid(self):
+        with self.fake_run({self.ACTIVE: "Wi-Fi 2:802-11-wireless\n",
+                            self.ssid("Wi-Fi 2"): "ExampleNet\n",
+                            self.psk("Wi-Fi 2"): "example-pass\n"}):
             self.assertEqual(LinuxPlatform().pc_wifi(), ("ExampleNet", "example-pass"))
 
     def test_not_on_wifi_is_none(self):
-        with self.fake_run({self.ACTIVE: "no:Other\n"}):
+        with self.fake_run({self.ACTIVE: "Wired:802-3-ethernet\n"}):
+            self.assertIsNone(LinuxPlatform().pc_wifi())
+
+    def test_no_ssid_is_none(self):
+        with self.fake_run({self.ACTIVE: "ExampleNet:802-11-wireless\n", self.ssid("ExampleNet"): "\n"}):
             self.assertIsNone(LinuxPlatform().pc_wifi())
 
     def test_no_saved_key_is_none(self):
-        with self.fake_run({self.ACTIVE: "yes:ExampleNet\n", self.PSK: "\n"}):
+        with self.fake_run({self.ACTIVE: "ExampleNet:802-11-wireless\n",
+                            self.ssid("ExampleNet"): "ExampleNet\n",
+                            self.psk("ExampleNet"): "\n"}):
             self.assertIsNone(LinuxPlatform().pc_wifi())
 
 
