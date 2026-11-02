@@ -1,13 +1,14 @@
 """Linux implementation of the platform layer (docs/code-map.md, "The platform layer").
 
 Filled in for data_dir, tool_path, no_window_flags, relay_command, stale_relay_pids, kill and
-pc_wifi (#33). single_instance, autostart and set_autostart stay stubs until #14d.
+pc_wifi (#33), and for single_instance, autostart and set_autostart (#34).
 The parsing and path rules live in linux_parse.py and linux_paths.py (pure, no system calls).
-fcntl is not imported here: it is Unix-only and this module must import on Windows too.
+fcntl is not imported at the top: it is Unix-only and this module must import on Windows too.
 """
 import logging
 import os
 import subprocess
+import sys
 from typing import List, Optional, Sequence, Tuple
 
 from . import linux_paths
@@ -15,6 +16,8 @@ from .base import Platform
 from .linux_parse import cmdline_mentions_gnirehtet, parse_active_ssid, parse_psk, parse_ss_pids
 
 log = logging.getLogger(__name__)
+
+_lock_handle = None  # the single-instance lock file, kept open for the life of the process
 
 
 def _run(args: List[str], timeout: float = 8) -> str:
@@ -82,3 +85,33 @@ class LinuxPlatform(Platform):
         if not key:
             return None
         return (ssid, key)
+
+    def single_instance(self, name: str) -> bool:
+        global _lock_handle
+        import fcntl  # Unix only; imported here so this module still imports on Windows
+        handle = open(os.path.join(self.data_dir(), name + ".lock"), "w")
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            return False
+        _lock_handle = handle
+        return True
+
+    def autostart(self) -> bool:
+        return os.path.exists(linux_paths.autostart_path(os.environ, os.path.expanduser("~")))
+
+    def set_autostart(self, on: bool) -> bool:
+        path = linux_paths.autostart_path(os.environ, os.path.expanduser("~"))
+        if on:
+            main_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py")
+            command = linux_paths.autostart_command(sys.executable, getattr(sys, "frozen", False), main_py)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(linux_paths.autostart_entry(command))
+        else:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+        return self.autostart()
