@@ -4,7 +4,8 @@ import unittest
 
 sys.path.insert(0, ".")
 from qt_platform.linux_parse import (  # noqa: E402
-    cmdline_mentions_gnirehtet, parse_active_ssid, parse_psk, parse_ss_pids)
+    cmdline_mentions_gnirehtet, parse_active_ssid, parse_active_wifi_connection, parse_psk,
+    parse_ss_pids, parse_ssid_field)
 
 SS = (
     "State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n"
@@ -34,6 +35,37 @@ class ActiveSsid(unittest.TestCase):
 
     def test_empty_text_is_none(self):
         self.assertIsNone(parse_active_ssid(""))
+
+
+class ActiveWifiConnection(unittest.TestCase):
+    def test_picks_the_wifi_line_not_ethernet(self):
+        self.assertEqual(parse_active_wifi_connection("Wired:802-3-ethernet\nWi-Fi 2:802-11-wireless\n"), "Wi-Fi 2")
+
+    def test_unescapes_colon_in_the_name(self):
+        self.assertEqual(parse_active_wifi_connection("Home\\:5G:802-11-wireless\n"), "Home:5G")
+
+    def test_no_wifi_line_is_none(self):
+        self.assertIsNone(parse_active_wifi_connection("lo:loopback\n"))
+
+    def test_empty_name_is_none(self):
+        self.assertIsNone(parse_active_wifi_connection(":802-11-wireless\n"))
+
+    def test_empty_text_is_none(self):
+        self.assertIsNone(parse_active_wifi_connection(""))
+
+
+class SsidField(unittest.TestCase):
+    def test_returns_first_line(self):
+        self.assertEqual(parse_ssid_field("ExampleNet\n"), "ExampleNet")
+
+    def test_unescapes_colon_and_backslash(self):
+        self.assertEqual(parse_ssid_field("My\\:Net\\\\2\n"), "My:Net\\2")
+
+    def test_empty_line_is_none(self):
+        self.assertIsNone(parse_ssid_field("\n"))
+
+    def test_empty_text_is_none(self):
+        self.assertIsNone(parse_ssid_field(""))
 
 
 class Psk(unittest.TestCase):
