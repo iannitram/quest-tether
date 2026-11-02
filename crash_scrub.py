@@ -10,7 +10,7 @@ def scrub(text: str, home: str, hostname: str, extra: Sequence[str] = ()) -> str
         if value:
             text = text.replace(value, "<redacted>")
     text = re.sub(
-        r"\b(password|passwd|passphrase|psk|secret|token|api[_-]?key|"
+        r"(password|passwd|passphrase|psk|secret|token|api[_-]?key|"
         r"serialno|serial|key content)\s*[:=]\s*\S+",
         r"\1=<redacted>",
         text,
