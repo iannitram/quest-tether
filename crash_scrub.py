@@ -10,8 +10,9 @@ def scrub(text: str, home: str, hostname: str, extra: Sequence[str] = ()) -> str
         if value:
             text = text.replace(value, "<redacted>")
     text = re.sub(
-        r"(password|passwd|passphrase|psk|secret|token|api[_-]?key|"
-        r"serialno|serial|key content)\s*[:=]\s*\S+",
+        r"((?:password|passwd|passphrase|psk|secret|token|api[_-]?key|"
+        r"serialno|serial|key content)s?)[\"']?\s*[:=]\s*(?!<redacted>)"
+        r"(?:\"[^\"]*\"|'[^']*'|\S+)",
         r"\1=<redacted>",
         text,
         flags=re.IGNORECASE,
@@ -25,5 +26,6 @@ def scrub(text: str, home: str, hostname: str, extra: Sequence[str] = ()) -> str
     if hostname:
         text = re.sub(re.escape(hostname), "<host>", text, flags=re.IGNORECASE)
     if home and home not in ("/", "\\"):
-        text = text.replace(home, "~").replace(home.replace("\\", "/"), "~")
+        for form in (home, home.replace("\\", "/")):
+            text = re.sub(re.escape(form), "~", text, flags=re.IGNORECASE)
     return text
