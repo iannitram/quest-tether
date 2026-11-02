@@ -1,0 +1,11 @@
+[Unit]
+Description=Quest Tether service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/quest-tether/qtetherd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
