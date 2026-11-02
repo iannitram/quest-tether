@@ -1,7 +1,7 @@
 """Platform layer: everything that differs between Windows and Linux (docs/code-map.md).
 
-Callers use `current()` instead of testing `os.name`. The Windows and Linux modules are
-stubs until their issues fill them in; nothing calls this package yet.
+Callers use `current()` instead of testing `os.name`. Both platform modules implement every
+method of the interface; nothing calls this package yet.
 """
 import sys
 
