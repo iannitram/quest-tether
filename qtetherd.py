@@ -8,6 +8,11 @@ It owns the one TetherManager on Linux and answers one JSON object per line on
 Clients: main.py's window on Linux and the Decky plugin's backend.
 """
 
+import json
+import socket
+import socketserver
+from typing import Any, Callable
+
 from tether_manager import temperature_zone
 
 HOST = "127.0.0.1"
@@ -46,6 +51,32 @@ def handle_request(tether, find_serial, req) -> dict:
     return {"ok": False, "error": "unknown command: " + cmd}
 
 
+def make_server(handler: Callable[[Any], dict], host: str = HOST, port: int = PORT) -> socketserver.ThreadingTCPServer:
+    """Bind a loopback JSON-lines server; the caller runs serve_forever()."""
+    if host != HOST:
+        raise ValueError("qtetherd binds to 127.0.0.1 only")
+
+    class Handler(socketserver.StreamRequestHandler):
+        def handle(self) -> None:
+            line = self.rfile.readline(65536)
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                answer = {"ok": False, "error": "bad request"}
+            else:
+                try:
+                    answer = handler(parsed)
+                except Exception:
+                    answer = {"ok": False, "error": "internal error"}
+            self.wfile.write((json.dumps(answer) + "\n").encode("utf-8"))
+
+    class Server(socketserver.ThreadingTCPServer):
+        allow_reuse_address = False
+        daemon_threads = True
+
+    return Server((host, port), Handler)
+
+
 def serve(host: str = HOST, port: int = PORT) -> None:
     """Run the service until stopped."""
     raise NotImplementedError
@@ -53,7 +84,12 @@ def serve(host: str = HOST, port: int = PORT) -> None:
 
 def request(cmd: dict, host: str = HOST, port: int = PORT, timeout: float = 5.0) -> dict:
     """Send one request to a running service and return its answer (client side)."""
-    raise NotImplementedError
+    with socket.create_connection((host, port), timeout=timeout) as conn:
+        conn.sendall((json.dumps(cmd) + "\n").encode("utf-8"))
+        line = conn.makefile("rb").readline()
+    if not line:
+        raise ConnectionError("no answer")
+    return json.loads(line)
 
 
 if __name__ == "__main__":
