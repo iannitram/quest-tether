@@ -19,6 +19,7 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `tools/` | Third-party binaries at run time (adb, relay, headset APK). Supplied by the package, never committed (#11). Four are still tracked: `AdbWinApi.dll`, `AdbWinUsbApi.dll`, `gnirehtet.jar`, `gnirehtet.apk`. | to clean (#11) | M9 |
 | `tests/` | **New.** Unit tests that need no headset (platform selection, temperature zones, parsing). `test_platform.py` (platform selection) is there; the rest arrive with their issues (#4, #17, #19, ...). CI runs them with `python -m unittest discover -s tests`. | present (1 file) | all |
 | `am_result.py` | **New.** Pure parser: the first `Error` line of an `am start` reply (#63). | new | - |
+| `heal_policy.py` | **New.** Pure awake-gated liveness policy: wakefulness parse, restart backoff, `Liveness` transitions (#65). | new | - |
 
 ## The platform layer (`qt_platform/base.py`)
 
