@@ -122,22 +122,33 @@ class TetherManager:
         self._on_log: Optional[Callable] = None
 
     def _find_gnirehtet(self) -> str:
-        """Locate gnirehtet Java JAR. Check next to exe (frozen builds) first,
-        then next to script."""
+        """Locate the relay this platform runs (Windows JAR, Linux native binary).
+        Check next to exe (frozen builds) first, then next to script."""
         search_dirs = []
         if getattr(sys, "frozen", False):
             search_dirs.append(os.path.join(os.path.dirname(sys.executable), "tools"))
         search_dirs.append(os.path.join(os.path.dirname(__file__), "tools"))
         for tools_dir in search_dirs:
-            jar_path = os.path.join(tools_dir, "gnirehtet.jar")
-            if os.path.isfile(jar_path):
-                return jar_path
+            for name, _needs_java in self.platform.relay_candidates():
+                path = os.path.join(tools_dir, name)
+                if os.path.isfile(path):
+                    return path
         return ""
 
+    def _relay_needs_java(self) -> bool:
+        """Whether the relay file this manager was given is the Java one."""
+        name = os.path.basename(self.gnirehtet_path)
+        for candidate, needs_java in self.platform.relay_candidates():
+            if name == candidate:
+                return needs_java
+        return True  # an explicit unknown path keeps the old Java assumption
+
     def is_relay_available(self) -> bool:
-        """Check if gnirehtet JAR and Java runtime are available."""
+        """Check the relay file and, for the Java relay, the runtime."""
         if not self.gnirehtet_path or not os.path.isfile(self.gnirehtet_path):
             return False
+        if not self._relay_needs_java():
+            return True
         try:
             result = subprocess.run(
                 [self._java_path, "-version"],

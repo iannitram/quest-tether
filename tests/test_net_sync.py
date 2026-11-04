@@ -94,6 +94,26 @@ class SyncQuestWifi(unittest.TestCase):
         self.assertIn("'secret'", connect)
         self.assertTrue(any('headset now on "ExampleNet"' in m for m in logs))
 
+    def test_connect_uses_the_ssid_from_the_key_lookup(self):
+        platform = FakePlatform("OldNet", ("NewNet", "secret", "wpa2"))
+        adb = FakeADB(["OtherNet", "NewNet"])
+        logs = []
+
+        with (
+            patch("net_sync.time.sleep"),
+            patch("net_sync.time.time", return_value=0.0),
+        ):
+            result = net_sync.sync_quest_wifi(
+                adb, "S1", logs.append, settle_seconds=25, platform=platform
+            )
+
+        self.assertEqual(result, "switched")
+        connect = next(
+            args[-1] for args in adb.commands if "connect-network" in str(args)
+        )
+        self.assertIn("'NewNet'", connect)
+        self.assertNotIn("'OldNet'", connect)
+
 
 if __name__ == "__main__":
     unittest.main()

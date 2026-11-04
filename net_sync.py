@@ -78,7 +78,7 @@ def sync_quest_wifi(
             f'Join "{pc_ssid}" on the headset manually: Settings > Wi-Fi.'
         )
         return "manual"
-    _, passphrase, security = pc
+    pc_ssid, passphrase, security = pc
     cmd = f"cmd wifi connect-network {_shq(pc_ssid)} {security} {_shq(passphrase)}"
     r = adb.run_adb("-s", serial, "shell", cmd, timeout=20)
     del pc, passphrase, cmd  # keep the secret out of any later frame/locals dump

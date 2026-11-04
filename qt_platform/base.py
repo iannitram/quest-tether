@@ -24,6 +24,10 @@ class Platform:
         """The command that runs `gnirehtet run <serial>` with this OS's relay."""
         raise NotImplementedError
 
+    def relay_candidates(self) -> List[Tuple[str, bool]]:
+        """Accepted relay filenames in preference order, each with whether it needs Java."""
+        raise NotImplementedError
+
     def stale_relay_pids(self, port: int) -> List[int]:
         """PIDs of gnirehtet processes listening on port (never another program's)."""
         raise NotImplementedError

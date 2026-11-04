@@ -153,6 +153,9 @@ class WindowsPlatform(Platform):
             serial,
         ]
 
+    def relay_candidates(self) -> List[Tuple[str, bool]]:
+        return [("gnirehtet.jar", True)]
+
     @staticmethod
     def _is_gnirehtet_pid(pid: int) -> bool:
         # from tether_manager.TetherManager._is_gnirehtet_pid

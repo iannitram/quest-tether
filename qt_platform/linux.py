@@ -73,6 +73,9 @@ class LinuxPlatform(Platform):
     def relay_command(self, tools_dir: str, serial: str) -> List[str]:
         return linux_paths.relay_command(tools_dir, serial)
 
+    def relay_candidates(self) -> List[Tuple[str, bool]]:
+        return [("gnirehtet", False)]
+
     def stale_relay_pids(self, port: int) -> List[int]:
         out = _run(["ss", "-ltnp"])
         if not out:

@@ -1,11 +1,14 @@
 """Caller-level tests: TetherManager goes through the platform for process control."""
 
+import os
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
 from tether_manager import TetherManager
+from qt_platform.linux import LinuxPlatform
+from qt_platform.windows import WindowsPlatform
 
 
 class FakePlatform:
@@ -27,6 +30,9 @@ class FakePlatform:
 
     def no_window_flags(self):
         return 0
+
+    def relay_candidates(self):
+        return [("fake.jar", True)]
 
     def stale_relay_pids(self, port):
         return list(self.stale)
@@ -86,6 +92,40 @@ class PlatformCallerTests(unittest.TestCase):
 
         self.assertEqual(platform.killed_trees, [321])
         self.assertIsNone(manager._process)
+
+
+class RelayLookupTests(unittest.TestCase):
+    def make_manager(self, platform, root):
+        with (
+            patch.object(platform, "data_dir", return_value=root),
+            patch.object(platform, "tool_path", return_value=None),
+            patch("tether_manager.__file__", os.path.join(root, "tether_manager.py")),
+        ):
+            return TetherManager(Mock(), platform=platform)
+
+    def test_linux_finds_the_native_relay_and_needs_no_java(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools = os.path.join(root, "tools")
+            os.makedirs(tools)
+            relay = os.path.join(tools, "gnirehtet")
+            open(relay, "w").close()
+
+            with patch("tether_manager.subprocess.run") as run:
+                manager = self.make_manager(LinuxPlatform(), root)
+                self.assertEqual(manager.gnirehtet_path, relay)
+                self.assertTrue(manager.is_relay_available())
+                run.assert_not_called()
+
+    def test_windows_does_not_accept_an_extensionless_relay(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools = os.path.join(root, "tools")
+            os.makedirs(tools)
+            open(os.path.join(tools, "gnirehtet"), "w").close()
+
+            manager = self.make_manager(WindowsPlatform(), root)
+
+            self.assertEqual(manager.gnirehtet_path, "")
+            self.assertFalse(manager.is_relay_available())
 
 
 if __name__ == "__main__":
