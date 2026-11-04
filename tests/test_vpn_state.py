@@ -7,7 +7,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import vpn_state  # noqa: E402
 
 LINE = "  NetworkAgentInfo{{network{{100}}  ni{{VPN {state} extra: }} nc{{[ Transports: VPN TransportInfo: <VpnTransportInfo{{type=1, sessionId={sid}, bypassable=false}}> ]}}}}"
-REAL = "  NetworkAgentInfo{network{100}  handle{432902426637}  ni{VPN CONNECTED extra: } created=2026-11-04T21:00:10.055Z Score(Policies : EVER_EVALUATED&IS_VPN&EVER_VALIDATED&IS_VALIDATED ; KeepConnected : 0)  lp{{InterfaceName: tun0 LinkAddresses: [ 10.0.0.2/32 ] MTU: 16384}}  nc{[ Transports: VPN Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&VALIDATED&NOT_SUSPENDED TransportInfo: <VpnTransportInfo{type=1, sessionId=Gnirehtet, bypassable=false longLivedTcpConnectionsExpensive=false}> Uids: <{0-99999}> UnderlyingNetworks: Null]}  factorySerialNumber=3}"
+_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+
+def _read_fixture(name):
+    with open(os.path.join(_FIXTURES, name), encoding="utf-8") as f:
+        return f.read()
+
+
+OPEN = _read_fixture("dumpsys_connectivity_vpn_open.txt")
+CLOSED = _read_fixture("dumpsys_connectivity_vpn_closed.txt")
 
 
 class GnirehtetVpnState(unittest.TestCase):
@@ -46,8 +55,11 @@ class GnirehtetVpnState(unittest.TestCase):
     def test_empty_state_run_is_skipped(self):
         self.assertIsNone(vpn_state.gnirehtet_vpn_state("ni{VPN  extra} sessionId=Gnirehtet"))
 
-    def test_real_quest2_line_is_connected(self):
-        self.assertEqual(vpn_state.gnirehtet_vpn_state(REAL), "CONNECTED")
+    def test_fixture_vpn_open_is_connected(self):
+        self.assertEqual(vpn_state.gnirehtet_vpn_state(OPEN), "CONNECTED")
+
+    def test_fixture_vpn_closed_has_no_agent(self):
+        self.assertIsNone(vpn_state.gnirehtet_vpn_state(CLOSED))
 
     def test_session_id_must_match_exactly(self):
         self.assertIsNone(vpn_state.gnirehtet_vpn_state(LINE.format(state="CONNECTED", sid="GnirehtetFoo")))
@@ -70,8 +82,15 @@ class VpnClosed(unittest.TestCase):
     def test_real_read_without_gnirehtet_agent_is_closed(self):
         self.assertTrue(vpn_state.vpn_closed("  NetworkAgentInfo{ ni{WIFI CONNECTED extra: } }"))
 
-    def test_real_quest2_line_is_not_closed(self):
-        self.assertFalse(vpn_state.vpn_closed(REAL))
+    def test_fixture_vpn_open_is_not_closed(self):
+        self.assertFalse(vpn_state.vpn_closed(OPEN))
+
+    def test_fixture_vpn_closed_is_closed(self):
+        self.assertTrue(vpn_state.vpn_closed(CLOSED))
+
+    def test_error_output_is_not_closed(self):
+        self.assertFalse(vpn_state.vpn_closed("error: device offline"))
+        self.assertFalse(vpn_state.vpn_closed("Can't find service: connectivity"))
 
     def test_disconnected_is_closed(self):
         self.assertTrue(vpn_state.vpn_closed(LINE.format(state="DISCONNECTED", sid="Gnirehtet")))
