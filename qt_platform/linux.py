@@ -92,6 +92,21 @@ class LinuxPlatform(Platform):
     def kill_tree(self, pid: int) -> None:
         os.kill(pid, 9)
 
+    def pc_ssid(self) -> Optional[str]:
+        name = parse_active_wifi_connection(
+            _run(["nmcli", "-t", "-f", "name,type", "connection", "show", "--active"])
+        )
+        if not name:
+            return None
+        return (
+            parse_ssid_field(
+                _run(
+                    ["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", name]
+                )
+            )
+            or None
+        )
+
     def pc_wifi(self) -> Optional[Tuple[str, str, str]]:
         name = parse_active_wifi_connection(
             _run(["nmcli", "-t", "-f", "name,type", "connection", "show", "--active"])

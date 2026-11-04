@@ -178,26 +178,23 @@ class WindowsPlatform(Platform):
     def stale_relay_pids(self, port: int) -> List[int]:
         # from tether_manager.TetherManager._kill_stale_process (the netstat scan; the kill is kill())
         pids: List[int] = []
-        try:
-            result = subprocess.run(
-                ["netstat", "-ano"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                creationflags=CREATE_NO_WINDOW,
-            )
-            for line in result.stdout.split("\n"):
-                if str(port) in line and "LISTENING" in line:
-                    parts = line.split()
-                    pid = int(parts[-1])
-                    if not self._is_gnirehtet_pid(pid):
-                        logger.info(
-                            f"Port {port} is held by PID {pid}, which is not gnirehtet — leaving it alone"
-                        )
-                        continue
-                    pids.append(pid)
-        except Exception as e:
-            logger.warning(f"Warning: could not check for stale process: {e}")
+        result = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        for line in result.stdout.split("\n"):
+            if str(port) in line and "LISTENING" in line:
+                parts = line.split()
+                pid = int(parts[-1])
+                if not self._is_gnirehtet_pid(pid):
+                    logger.info(
+                        f"Port {port} is held by PID {pid}, which is not gnirehtet — leaving it alone"
+                    )
+                    continue
+                pids.append(pid)
         return pids
 
     def kill(self, pid: int) -> None:
@@ -219,9 +216,13 @@ class WindowsPlatform(Platform):
             creationflags=CREATE_NO_WINDOW,
         )
 
+    def pc_ssid(self) -> Optional[str]:
+        # from net_sync.get_pc_ssid (minus the os.name guard); reads no key
+        return _get_pc_ssid()
+
     def pc_wifi(self) -> Optional[Tuple[str, str, str]]:
         # from net_sync.get_pc_ssid + net_sync._get_pc_credentials
-        ssid = _get_pc_ssid()
+        ssid = self.pc_ssid()
         if ssid is None:
             return None
         creds = _get_pc_credentials(ssid)

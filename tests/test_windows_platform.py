@@ -258,9 +258,11 @@ class StaleRelayPids(unittest.TestCase):
         with mock.patch("subprocess.run", side_effect=_fake_run(netstat, {}, [])):
             self.assertEqual(WindowsPlatform().stale_relay_pids(31416), [6000])
 
-    def test_netstat_missing_gives_empty_list(self):
+    def test_netstat_failure_propagates_to_the_caller(self):
+        """The caller (_kill_stale_process) logs the warning to the UI; do not swallow it here."""
         with mock.patch("subprocess.run", side_effect=FileNotFoundError):
-            self.assertEqual(WindowsPlatform().stale_relay_pids(31416), [])
+            with self.assertRaises(FileNotFoundError):
+                WindowsPlatform().stale_relay_pids(31416)
 
 
 class KillTree(unittest.TestCase):

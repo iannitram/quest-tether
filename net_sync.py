@@ -25,9 +25,11 @@ def get_pc_wifi(platform=None) -> Optional[Tuple[str, str, str]]:
 
 
 def get_pc_ssid(platform=None) -> Optional[str]:
-    """SSID the PC's Wi-Fi is connected to, or None (Ethernet-only, Wi-Fi off)."""
-    pc = get_pc_wifi(platform)
-    return pc[0] if pc else None
+    """SSID the PC's Wi-Fi is connected to, or None (Ethernet-only, Wi-Fi off).
+
+    Reads no key: credentials are only fetched when the headset must be switched.
+    """
+    return (platform or qt_platform.current()).pc_ssid()
 
 
 def _shq(s: str) -> str:
@@ -53,11 +55,10 @@ def sync_quest_wifi(
     """Join the headset to the PC's Wi-Fi network. Returns a status string:
     'same' | 'switched' | 'no-pc-wifi' | 'no-quest-wifi' | 'manual' | 'failed'.
     """
-    pc = get_pc_wifi(platform)
-    if not pc:
+    pc_ssid = get_pc_ssid(platform)
+    if not pc_ssid:
         log("Wi-Fi sync: PC is not on Wi-Fi — skipping")
         return "no-pc-wifi"
-    pc_ssid, passphrase, security = pc
     quest = get_quest_ssid(adb, serial)
     if quest is None:
         log("Wi-Fi sync: headset Wi-Fi is off or unreadable — skipping")
@@ -69,9 +70,18 @@ def sync_quest_wifi(
     log(
         f'Wi-Fi sync: PC is on "{pc_ssid}" but headset is on "{quest}" — switching headset'
     )
+    pc = get_pc_wifi(platform)
+    if not pc:
+        log(
+            f'Wi-Fi sync: can\'t read a WPA2/WPA3 passphrase for "{pc_ssid}" '
+            f"(open/enterprise network, or app not elevated). "
+            f'Join "{pc_ssid}" on the headset manually: Settings > Wi-Fi.'
+        )
+        return "manual"
+    _, passphrase, security = pc
     cmd = f"cmd wifi connect-network {_shq(pc_ssid)} {security} {_shq(passphrase)}"
     r = adb.run_adb("-s", serial, "shell", cmd, timeout=20)
-    del passphrase, cmd  # keep the secret out of any later frame/locals dump
+    del pc, passphrase, cmd  # keep the secret out of any later frame/locals dump
     if r.returncode != 0 or "invalid" in (r.stdout + r.stderr).lower():
         log("Wi-Fi sync: headset rejected the connect command")
         return "failed"

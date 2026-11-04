@@ -36,6 +36,13 @@ class Platform:
         """Force-stop a process and its children."""
         raise NotImplementedError
 
+    def pc_ssid(self) -> Optional[str]:
+        """SSID of the PC's current Wi-Fi network, or None if not on Wi-Fi.
+
+        Must not read the saved key: callers only fetch credentials when switching.
+        """
+        raise NotImplementedError
+
     def pc_wifi(self) -> Optional[Tuple[str, str, str]]:
         """(SSID, key, security) of the PC's current Wi-Fi network, or None if not on Wi-Fi or unreadable.
 
