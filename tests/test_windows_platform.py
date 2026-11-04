@@ -14,7 +14,7 @@ import types
 import unittest
 from unittest import mock
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import net_sync  # noqa: E402
 import tether_manager  # noqa: E402
 from qt_platform import windows  # noqa: E402

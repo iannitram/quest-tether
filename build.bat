@@ -14,6 +14,18 @@ REM Install dependencies
 echo Installing dependencies...
 pip install customtkinter pystray Pillow pyinstaller -q
 
+REM Bake the crash-report destination. build.spec reads these variables and
+REM writes the git-ignored bug_drop_config.py, which defines BASE and TOKEN.
+echo.
+if "%CRAFT_BUG_DROP_BASE%"=="" goto :no_crash_config
+if "%CRAFT_BUG_DROP_TOKEN%"=="" goto :no_crash_config
+echo Crash reports will use the configured File Drop destination.
+goto :build
+:no_crash_config
+echo WARNING: CRAFT_BUG_DROP_BASE / CRAFT_BUG_DROP_TOKEN not set.
+echo WARNING: This build will not send crash reports.
+
+:build
 REM Build EXE
 echo.
 echo Building QuestTether.exe...

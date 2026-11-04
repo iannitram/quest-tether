@@ -10,7 +10,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import crash_report  # noqa: E402
 
 UTC = timezone.utc
@@ -52,7 +52,7 @@ class TempCase(unittest.TestCase):
         self.clock = Clock()
         self.log_path = os.path.join(self.dir, "app.log")
 
-    def reporter(self, uploader, *, enabled=True, log_path=None):
+    def reporter(self, uploader, *, enabled=None, log_path=None, rand_hex=None):
         return crash_report.Reporter(
             self.dir,
             enabled=enabled,
@@ -63,7 +63,7 @@ class TempCase(unittest.TestCase):
             log_path=log_path or self.log_path,
             hostname="example-host",
             home="/home/someone",
-            rand_hex=lambda: "0a1b2c3d",
+            rand_hex=rand_hex or (lambda: "0a1b2c3d"),
         )
 
 
@@ -168,6 +168,49 @@ class ReportTests(TempCase):
         self.assertEqual(restarted.retry_pending(), 1)
         self.assertEqual([name for name, _ in online.calls], [queued])
         self.assertEqual(restarted.queue.pending(), [])
+
+    def test_the_zip_is_queued_before_the_upload_starts(self):
+        seen = []
+        reporter = None
+
+        def uploader(name, data):
+            seen.append(reporter.queue.pending())
+            return True
+
+        reporter = self.reporter(uploader)
+        reporter.report(*crash())
+        reporter.wait()
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(len(seen[0]), 1)
+        self.assertEqual(reporter.queue.pending(), [])
+
+    def test_the_queue_keeps_the_newest_ten(self):
+        names = iter(f"{i:08x}" for i in range(12))
+        uploader = FakeUploader(result=False)
+        reporter = self.reporter(uploader, rand_hex=lambda: next(names))
+        for i in range(12):
+            self.clock.value = datetime(2026, 11, 1, 0, 0, i, tzinfo=UTC)
+            reporter.report(*crash(f"crash {i}"))
+        reporter.wait()
+        expected = [
+            crash_report.report_filename(
+                crash_report.platform_name(),
+                datetime(2026, 11, 1, 0, 0, i, tzinfo=UTC),
+                f"{i:08x}",
+            )
+            for i in range(2, 12)
+        ]
+        self.assertEqual(reporter.queue.pending(), expected)
+
+    def test_the_off_switch_survives_a_new_reporter(self):
+        first = self.reporter(FakeUploader())
+        first.set_enabled(False)
+        uploader = FakeUploader()
+        second = self.reporter(uploader)
+        self.assertFalse(second.enabled)
+        second.report(*crash())
+        second.wait()
+        self.assertEqual(uploader.calls, [])
 
 
 class UploadTests(unittest.TestCase):

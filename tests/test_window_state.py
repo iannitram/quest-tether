@@ -1,11 +1,13 @@
 """Exercise the real window state handler without a display or headset."""
 import importlib.util
+import os
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tether_manager import TetherManager, TetherState, TetherStats
 
 

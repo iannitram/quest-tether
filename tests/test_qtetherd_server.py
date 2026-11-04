@@ -1,11 +1,12 @@
 """qtetherd JSON-lines server and client over loopback (no headset): python -m unittest discover -s tests"""
 import json
 import socket
+import os
 import sys
 import threading
 import unittest
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import qtetherd  # noqa: E402
 
 

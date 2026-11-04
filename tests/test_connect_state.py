@@ -1,6 +1,9 @@
 """Tunnel state decisions that can be checked without ADB or a headset."""
+import os
+import sys
 import unittest
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tether_manager import TetherState, _state_for_tunnel
 
 

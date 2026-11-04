@@ -1,9 +1,10 @@
 """Battery temperature: zones and dumpsys parse (no headset, no adb): python -m unittest discover tests"""
 import subprocess
+import os
 import sys
 import unittest
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tether_manager  # noqa: E402
 from tether_manager import TetherManager, TetherStats  # noqa: E402
 

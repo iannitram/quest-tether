@@ -1,9 +1,10 @@
 """Crash hook: a sink that raises even a BaseException still lets the previous hook run (no files, no network): python -m unittest discover -s tests"""
+import os
 import sys
 import threading
 import unittest
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import crash_hook  # noqa: E402
 
 

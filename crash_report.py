@@ -294,6 +294,11 @@ class Reporter:
             pass
         name = report_filename(platform_name(), now, self.rand_hex())
         data = self._make_zip(exc_type, exc, tb, now)
+        with self._lock:
+            try:
+                self.queue.add(name, data)
+            except OSError:
+                pass
         self._start(self._send, name, data)
         return True
 
@@ -315,8 +320,7 @@ class Reporter:
                 return
             if self._upload(name, data):
                 self.limiter.record(now)
-            else:
-                self.queue.add(name, data)
+                self.queue.remove(name)
 
     def retry_pending(self) -> int:
         """Retry queued reports, oldest first; stop at the first failure."""
@@ -348,8 +352,8 @@ class Reporter:
         thread.start()
         return thread
 
-    def wait(self, timeout: float = 5.0) -> None:
-        """Join the upload threads (tests and shutdown only)."""
+    def wait(self, timeout: float = UPLOAD_TIMEOUT) -> None:
+        """Join the upload threads for up to the upload timeout."""
         for thread in list(self._threads):
             if thread.is_alive():
                 thread.join(timeout)
@@ -363,7 +367,7 @@ def install(data_dir_path=None, *, enabled=None, log_path=None, **kwargs):
     if enabled is None and _enabled_default is not None:
         enabled = _enabled_default
     _reporter = Reporter(data_dir_path, enabled=enabled, log_path=log_path, **kwargs)
-    crash_hook.install(_reporter.report)
+    crash_hook.install(_reporter.report, _reporter.wait)
     if _reporter.base and _reporter.token:
         _reporter._start(_reporter.retry_pending)
     else:

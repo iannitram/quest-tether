@@ -17,18 +17,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import crash_hook
 import crash_report
 
-import customtkinter as ctk
-from adb_manager import ADBManager
-from tether_manager import TetherManager, TetherState, TetherStats, temperature_zone
-
-# System tray — graceful degradation if not installed
-try:
-    import pystray
-    from PIL import Image, ImageDraw, ImageFont
-    HAS_TRAY = True
-except ImportError:
-    HAS_TRAY = False
-
 # --- Logging Setup ---
 LOG_DIR = crash_report.data_dir()
 LOG_PATH = os.path.join(LOG_DIR, "quest-tether.log")
@@ -48,6 +36,20 @@ logging.basicConfig(
     handlers=_handlers,
 )
 logger = logging.getLogger(__name__)
+
+crash_report.install(log_path=LOG_PATH)
+
+import customtkinter as ctk
+from adb_manager import ADBManager
+from tether_manager import TetherManager, TetherState, TetherStats, temperature_zone
+
+# System tray — graceful degradation if not installed
+try:
+    import pystray
+    from PIL import Image, ImageDraw, ImageFont
+    HAS_TRAY = True
+except ImportError:
+    HAS_TRAY = False
 
 # --- Theme ---
 ctk.set_appearance_mode("dark")
@@ -890,7 +892,6 @@ def _acquire_single_instance() -> bool:
 
 def main():
     global _app_instance
-    crash_report.install(log_path=LOG_PATH)
     if not _acquire_single_instance():
         logger.info("Quest Tether is already running — exiting")
         sys.exit(0)
