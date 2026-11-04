@@ -5,11 +5,23 @@
 import os
 import customtkinter
 
+_SPEC_DIR = globals().get("SPECPATH") or os.getcwd()
+_CONFIG_PATH = os.path.join(_SPEC_DIR, "bug_drop_config.py")
+_CONFIG_BASE = os.environ.get("CRAFT_BUG_DROP_BASE")
+_CONFIG_TOKEN = os.environ.get("CRAFT_BUG_DROP_TOKEN")
+with open(_CONFIG_PATH, "w", encoding="utf-8") as _config:
+    _config.write('"""Build-time File Drop destination: BASE and TOKEN."""\n')
+    _config.write(f"BASE = {_CONFIG_BASE!r}\n")
+    _config.write(f"TOKEN = {_CONFIG_TOKEN!r}\n")
+if not (_CONFIG_BASE and _CONFIG_TOKEN):
+    print("warning: CRAFT_BUG_DROP_BASE / CRAFT_BUG_DROP_TOKEN not set; "
+          "this build will not send crash reports.")
+
 block_cipher = None
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=[_SPEC_DIR],
     binaries=[],
     datas=[
         # Include customtkinter theme files
@@ -19,7 +31,7 @@ a = Analysis(
         # Include assets
         ('assets', 'assets'),
     ],
-    hiddenimports=['customtkinter', 'pystray', 'pystray._win32', 'PIL'],
+    hiddenimports=['customtkinter', 'pystray', 'pystray._win32', 'PIL', 'bug_drop_config'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -1,9 +1,9 @@
 """Linux output parsers (no headset, no nmcli, no ss): python -m unittest discover -s tests"""
-
+import os
 import sys
 import unittest
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from qt_platform.linux_parse import (  # noqa: E402
     cmdline_mentions_gnirehtet,
     parse_active_ssid,

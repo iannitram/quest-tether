@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from first_run import missing_tools  # noqa: E402
 
 WIN = ["adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll", "gnirehtet.jar", "gnirehtet.apk"]

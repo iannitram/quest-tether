@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from qt_platform import linux  # noqa: E402
 from qt_platform.linux import LinuxPlatform  # noqa: E402
 

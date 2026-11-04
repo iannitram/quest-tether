@@ -1,8 +1,9 @@
 """Platform selection (no headset needed): python -m unittest discover tests"""
+import os
 import sys
 import unittest
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import qt_platform  # noqa: E402
 
 
