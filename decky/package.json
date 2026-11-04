@@ -16,7 +16,7 @@
     "tether",
     "gnirehtet"
   ],
-  "author": "iannitram",
+  "author": "Quest Tether contributors",
   "license": "MIT",
   "devDependencies": {
     "@decky/rollup": "^1.0.2",

@@ -44,13 +44,6 @@ const ZONE_COLOR: Record<string, string> = {
   unknown: "#9a9aae",
 };
 
-function temperatureZone(temp: number | null | undefined): string {
-  if (temp === null || temp === undefined || Number.isNaN(temp)) return "unknown";
-  if (temp < 38.0) return "green";
-  if (temp <= 42.0) return "yellow";
-  return "red";
-}
-
 function temperatureText(temp: number | null | undefined): string {
   if (temp === null || temp === undefined || Number.isNaN(temp)) return "Unknown";
   return `${temp.toFixed(1)} °C`;
@@ -114,7 +107,8 @@ function Content() {
 
   const stateInfo = STATE_LABEL[st.state] ?? STATE_LABEL.idle;
   const temp = st.temp_c ?? null;
-  const zone = temp === null ? (st.zone ?? "unknown") : temperatureZone(temp);
+  // The zone comes from qtetherd (tether_manager.temperature_zone), the one source of truth.
+  const zone = st.zone ?? "unknown";
   const up = isUp(st.state);
   const errText = uiError || st.error || "";
 
