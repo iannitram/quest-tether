@@ -20,6 +20,7 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `tests/` | **New.** Unit tests that need no headset (platform selection, temperature zones, parsing). `test_platform.py` (platform selection) is there; the rest arrive with their issues (#4, #17, #19, ...). CI runs them with `python -m unittest discover -s tests`. | present (1 file) | all |
 | `am_result.py` | **New.** Pure parser: the first `Error` line of an `am start` reply (#63). | new | - |
 | `heal_policy.py` | **New.** Pure awake-gated liveness policy: wakefulness parse, restart backoff, `Liveness` transitions (#65). | new | - |
+| `vpn_state.py` | **New.** Pure parser: the gnirehtet VPN agent's state from `dumpsys connectivity`, for a verified "VPN closed" (#64). | new | - |
 
 ## The platform layer (`qt_platform/base.py`)
 
