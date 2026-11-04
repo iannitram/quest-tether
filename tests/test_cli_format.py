@@ -24,11 +24,22 @@ class FormatRate(unittest.TestCase):
     def test_megabytes(self):
         self.assertEqual(cli_format.format_rate(2_500_000), "2.5 MB/s")
 
+    def test_gigabytes(self):
+        self.assertEqual(cli_format.format_rate(999_999_999), "1.0 GB/s")
+        self.assertEqual(cli_format.format_rate(999_940_000), "999.9 MB/s")
+
     def test_negative(self):
         self.assertEqual(cli_format.format_rate(-5), "-")
 
-    def test_bytes_rounds_down(self):
+    def test_nan(self):
+        self.assertEqual(cli_format.format_rate(float("nan")), "-")
+
+    def test_inf(self):
+        self.assertEqual(cli_format.format_rate(float("inf")), "-")
+
+    def test_bytes_whole_number(self):
         self.assertEqual(cli_format.format_rate(999.4), "999 B/s")
+        self.assertEqual(cli_format.format_rate(0.6), "1 B/s")
 
     def test_boundary_kb(self):
         self.assertEqual(cli_format.format_rate(999.6), "1.0 kB/s")
@@ -119,9 +130,9 @@ class ExitCode(unittest.TestCase):
         self.assertEqual(
             cli_format.exit_code({"ok": True, "error": "bad usage"}), 2)
 
-    def test_ok_wins_over_other_error(self):
+    def test_error_wins_over_ok(self):
         self.assertEqual(
-            cli_format.exit_code({"ok": True, "error": "stale"}), 0)
+            cli_format.exit_code({"ok": True, "error": "stale"}), 1)
 
     def test_error_none_is_ok(self):
         self.assertEqual(
