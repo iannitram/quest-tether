@@ -2,5 +2,6 @@ build/
 dist/
 __pycache__/
 *.pyc
+bug_drop_config.py
 tools/*
 !tools/README.md

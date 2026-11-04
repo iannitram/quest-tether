@@ -14,6 +14,9 @@ from datetime import timedelta
 # Ensure imports work when running from different directories
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import crash_hook
+import crash_report
+
 import customtkinter as ctk
 from adb_manager import ADBManager
 from tether_manager import TetherManager, TetherState, TetherStats, temperature_zone
@@ -27,10 +30,22 @@ except ImportError:
     HAS_TRAY = False
 
 # --- Logging Setup ---
+LOG_DIR = crash_report.data_dir()
+LOG_PATH = os.path.join(LOG_DIR, "quest-tether.log")
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+except OSError:
+    pass
+_handlers = [logging.StreamHandler()]
+try:
+    _handlers.append(logging.FileHandler(LOG_PATH, encoding="utf-8"))
+except OSError:
+    pass
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
+    handlers=_handlers,
 )
 logger = logging.getLogger(__name__)
 
@@ -271,6 +286,11 @@ class QuestTetherApp(ctk.CTk):
     def __init__(self, start_minimized: bool = False):
         super().__init__()
 
+        if crash_report.current() is not None:
+            self.report_callback_exception = crash_hook.tk_callback(
+                crash_report.current().report
+            )
+
         self._start_minimized = start_minimized
 
         self.title(self.APP_TITLE)
@@ -382,7 +402,18 @@ class QuestTetherApp(ctk.CTk):
             command=self._toggle_auto_reconnect,
             width=36, height=18,
         )
-        self._auto_reconnect_switch.pack(side="right", padx=(0, 8))
+        self._auto_reconnect_switch.pack(side="right", padx=(8, 0))
+
+        self._crash_reports_var = ctk.BooleanVar(value=crash_report.is_enabled())
+        self._crash_reports_switch = ctk.CTkSwitch(
+            switches_frame, text="Crash reports",
+            font=ctk.CTkFont(family="Segoe UI", size=10),
+            text_color=COLORS["text_secondary"],
+            variable=self._crash_reports_var,
+            command=self._toggle_crash_reports,
+            width=36, height=18,
+        )
+        self._crash_reports_switch.pack(side="right", padx=(0, 8))
 
         self._wifi_labels = {
             "Headset Wi-Fi: off": "off",
@@ -646,6 +677,12 @@ class QuestTetherApp(ctk.CTk):
         state = "on" if self._auto_reconnect_var.get() else "off"
         self._log_panel.append(f"Auto-reconnect {state}")
 
+    def _toggle_crash_reports(self):
+        enabled = self._crash_reports_var.get()
+        crash_report.set_enabled(enabled)
+        state = "on" if enabled else "off"
+        self._log_panel.append(f"Send crash reports automatically {state}")
+
     def _on_wifi_mode(self, label: str):
         mode = self._wifi_labels[label]
         self.tether.wifi_mode = mode
@@ -853,6 +890,7 @@ def _acquire_single_instance() -> bool:
 
 def main():
     global _app_instance
+    crash_report.install(log_path=LOG_PATH)
     if not _acquire_single_instance():
         logger.info("Quest Tether is already running — exiting")
         sys.exit(0)
