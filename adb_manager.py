@@ -11,8 +11,7 @@ import os
 import re
 from typing import Optional, Callable, Dict, List
 
-# Suppress console windows for all subprocess calls on Windows
-_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+import qt_platform
 
 
 def parse_devices(text: str) -> List[Dict[str, str]]:
@@ -23,7 +22,11 @@ def parse_devices(text: str) -> List[Dict[str, str]]:
 
     for line in text.splitlines():
         line = line.strip()
-        if not line or line.startswith("List of devices attached") or line.startswith("* daemon"):
+        if (
+            not line
+            or line.startswith("List of devices attached")
+            or line.startswith("* daemon")
+        ):
             continue
         parts = line.split()
         if not parts:
@@ -34,10 +37,12 @@ def parse_devices(text: str) -> List[Dict[str, str]]:
             or parts[1].startswith("no-permission")
             or "no permissions" in line
         ):
-            devices.append({
-                "serial": serial,
-                "state": "no-permission",
-            })
+            devices.append(
+                {
+                    "serial": serial,
+                    "state": "no-permission",
+                }
+            )
             continue
 
         if len(parts) >= 2:
@@ -47,14 +52,16 @@ def parse_devices(text: str) -> List[Dict[str, str]]:
                 if ":" in part:
                     key, val = part.split(":", 1)
                     info[key] = val
-            devices.append({
-                "serial": serial,
-                "status": status,
-                "model": info.get("model", "Unknown"),
-                "device": info.get("device", "Unknown"),
-                "product": info.get("product", "Unknown"),
-                "transport_id": info.get("transport_id", ""),
-            })
+            devices.append(
+                {
+                    "serial": serial,
+                    "status": status,
+                    "model": info.get("model", "Unknown"),
+                    "device": info.get("device", "Unknown"),
+                    "product": info.get("product", "Unknown"),
+                    "transport_id": info.get("transport_id", ""),
+                }
+            )
 
     return devices
 
@@ -69,7 +76,9 @@ class ADBManager:
         "Quest 3S": ["Quest 3S"],
     }
 
-    def __init__(self, adb_path: Optional[str] = None):
+    def __init__(self, adb_path: Optional[str] = None, platform=None):
+        self.platform = platform or qt_platform.current()
+        self._no_window = self.platform.no_window_flags()
         self.adb_path = adb_path or self._find_adb()
         self._monitor_thread: Optional[threading.Thread] = None
         self._monitoring = False
@@ -80,41 +89,28 @@ class ADBManager:
     def _find_adb(self) -> str:
         """Locate ADB binary. Check next to exe (frozen builds) first,
         then next to script, then PATH."""
-        local_paths = []
+        base_dirs = []
         # Frozen exe (PyInstaller): check next to the real .exe first
-        if getattr(sys, 'frozen', False):
+        if getattr(sys, "frozen", False):
             exe_dir = os.path.dirname(sys.executable)
-            local_paths.append(os.path.join(exe_dir, "tools", "adb.exe"))
+            base_dirs.append(os.path.join(exe_dir, "tools"))
         # Script mode: check next to the .py file
-        local_paths += [
-            os.path.join(os.path.dirname(__file__), "tools", "adb.exe"),
-            os.path.join(os.path.dirname(__file__), "tools", "platform-tools", "adb.exe"),
-            os.path.join(os.path.dirname(__file__), "tools", "adb"),
+        here = os.path.dirname(__file__)
+        base_dirs += [
+            os.path.join(here, "tools"),
+            os.path.join(here, "tools", "platform-tools"),
         ]
-        for p in local_paths:
-            if os.path.isfile(p):
-                return p
-
-        try:
-            result = subprocess.run(
-                ["where", "adb"] if os.name == "nt" else ["which", "adb"],
-                capture_output=True, text=True, timeout=5,
-                creationflags=_NO_WINDOW,
-            )
-            if result.returncode == 0:
-                return result.stdout.strip().split("\n")[0].strip()
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
-        return "adb"
+        return self.platform.tool_path("adb", base_dirs) or "adb"
 
     def is_adb_available(self) -> bool:
         """Check if ADB is reachable."""
         try:
             result = subprocess.run(
                 [self.adb_path, "version"],
-                capture_output=True, text=True, timeout=5,
-                creationflags=_NO_WINDOW,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                creationflags=self._no_window,
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -124,8 +120,13 @@ class ADBManager:
         """Run an ADB command and return the result."""
         cmd = [self.adb_path] + list(args)
         try:
-            return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                                  creationflags=_NO_WINDOW)
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                creationflags=self._no_window,
+            )
         except subprocess.TimeoutExpired:
             return subprocess.CompletedProcess(cmd, 1, "", "Timeout")
         except FileNotFoundError:
@@ -147,12 +148,21 @@ class ADBManager:
             device = dev.get("device", "").lower()
             combined = f"{model} {product} {device}"
 
-            if any(q.lower() in combined for variants in self.QUEST_MODELS.values() for q in variants):
+            if any(
+                q.lower() in combined
+                for variants in self.QUEST_MODELS.values()
+                for q in variants
+            ):
                 return dev
             if "quest" in combined or "oculus" in combined or "meta" in combined:
                 return dev
 
-        usb_devices = [d for d in devices if d.get("status") == "device" and not d.get("serial", "").startswith("emulator")]
+        usb_devices = [
+            d
+            for d in devices
+            if d.get("status") == "device"
+            and not d.get("serial", "").startswith("emulator")
+        ]
         if len(usb_devices) == 1:
             return usb_devices[0]
 
@@ -175,8 +185,13 @@ class ADBManager:
                     info["battery_level"] = line.split(":")[-1].strip() + "%"
                 elif "status:" in line:
                     status_code = line.split(":")[-1].strip()
-                    status_map = {"1": "Unknown", "2": "Charging", "3": "Discharging",
-                                  "4": "Not Charging", "5": "Full"}
+                    status_map = {
+                        "1": "Unknown",
+                        "2": "Charging",
+                        "3": "Discharging",
+                        "4": "Not Charging",
+                        "5": "Full",
+                    }
                     info["battery_status"] = status_map.get(status_code, status_code)
 
         # VPN IP
@@ -191,10 +206,15 @@ class ADBManager:
     def stop_gnirehtet_client(self, serial: str) -> bool:
         """Stop the gnirehtet VPN client on the device."""
         result = self.run_adb(
-            "-s", serial, "shell",
-            "am", "start",
-            "-n", "com.genymobile.gnirehtet/.GnirehtetActivity",
-            "-a", "com.genymobile.gnirehtet.STOP"
+            "-s",
+            serial,
+            "shell",
+            "am",
+            "start",
+            "-n",
+            "com.genymobile.gnirehtet/.GnirehtetActivity",
+            "-a",
+            "com.genymobile.gnirehtet.STOP",
         )
         return result.returncode == 0
 
@@ -206,10 +226,15 @@ class ADBManager:
         """
         self.run_adb("-s", serial, "reverse", "localabstract:gnirehtet", f"tcp:{port}")
         result = self.run_adb(
-            "-s", serial, "shell",
-            "am", "start",
-            "-n", "com.genymobile.gnirehtet/.GnirehtetActivity",
-            "-a", "com.genymobile.gnirehtet.START"
+            "-s",
+            serial,
+            "shell",
+            "am",
+            "start",
+            "-n",
+            "com.genymobile.gnirehtet/.GnirehtetActivity",
+            "-a",
+            "com.genymobile.gnirehtet.START",
         )
         return result.returncode == 0
 
@@ -232,8 +257,7 @@ class ADBManager:
     def force_stop_gnirehtet(self, serial: str) -> bool:
         """Force-stop the gnirehtet app."""
         result = self.run_adb(
-            "-s", serial, "shell",
-            "am", "force-stop", "com.genymobile.gnirehtet"
+            "-s", serial, "shell", "am", "force-stop", "com.genymobile.gnirehtet"
         )
         return result.returncode == 0
 
@@ -241,18 +265,26 @@ class ADBManager:
         """Check Wi-Fi routing AND DNS are restored after VPN teardown."""
         # Raw IP connectivity
         result = self.run_adb(
-            "-s", serial, "shell", "sh", "-c",
+            "-s",
+            serial,
+            "shell",
+            "sh",
+            "-c",
             "echo -n | timeout 3 toybox nc -w 2 8.8.8.8 443 && echo OK || echo FAIL",
-            timeout=8
+            timeout=8,
         )
         if result.returncode != 0 or "OK" not in result.stdout:
             return False
 
         # DNS resolution
         result = self.run_adb(
-            "-s", serial, "shell", "sh", "-c",
+            "-s",
+            serial,
+            "shell",
+            "sh",
+            "-c",
             "echo -n | timeout 3 toybox nc -w 2 connectivitycheck.gstatic.com 80 && echo OK || echo FAIL",
-            timeout=8
+            timeout=8,
         )
         return result.returncode == 0 and "OK" in result.stdout
 
@@ -285,7 +317,9 @@ class ADBManager:
 
     # --- USB Monitoring ---
 
-    def start_monitoring(self, on_connected=None, on_disconnected=None, poll_interval=2.0):
+    def start_monitoring(
+        self, on_connected=None, on_disconnected=None, poll_interval=2.0
+    ):
         """Start background thread that polls for Quest USB connection."""
         self._on_device_connected = on_connected
         self._on_device_disconnected = on_disconnected

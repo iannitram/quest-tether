@@ -42,11 +42,13 @@ crash_report.install(log_path=LOG_PATH)
 import customtkinter as ctk
 from adb_manager import ADBManager
 from tether_manager import TetherManager, TetherState, TetherStats, temperature_zone
+import qt_platform
 
 # System tray — graceful degradation if not installed
 try:
     import pystray
     from PIL import Image, ImageDraw, ImageFont
+
     HAS_TRAY = True
 except ImportError:
     HAS_TRAY = False
@@ -77,22 +79,22 @@ def format_bytes(b: int) -> str:
     """Format byte count to human-readable."""
     if b < 1024:
         return f"{b} B"
-    elif b < 1024 ** 2:
+    elif b < 1024**2:
         return f"{b / 1024:.1f} KB"
-    elif b < 1024 ** 3:
-        return f"{b / (1024 ** 2):.1f} MB"
+    elif b < 1024**3:
+        return f"{b / (1024**2):.1f} MB"
     else:
-        return f"{b / (1024 ** 3):.2f} GB"
+        return f"{b / (1024**3):.2f} GB"
 
 
 def format_rate(bps: float) -> str:
     """Format bytes/sec to human-readable rate."""
     if bps < 1024:
         return f"{bps:.0f} B/s"
-    elif bps < 1024 ** 2:
+    elif bps < 1024**2:
         return f"{bps / 1024:.1f} KB/s"
     else:
-        return f"{bps / (1024 ** 2):.1f} MB/s"
+        return f"{bps / (1024**2):.1f} MB/s"
 
 
 def format_uptime(seconds: float) -> str:
@@ -120,13 +122,17 @@ class StatusIndicator(ctk.CTkFrame):
         super().__init__(parent, fg_color="transparent", **kwargs)
 
         self._dot = ctk.CTkLabel(
-            self, text="\u25cf", font=ctk.CTkFont(size=18),
-            text_color=COLORS["text_dim"], width=24,
+            self,
+            text="\u25cf",
+            font=ctk.CTkFont(size=18),
+            text_color=COLORS["text_dim"],
+            width=24,
         )
         self._dot.pack(side="left", padx=(0, 6))
 
         self._label = ctk.CTkLabel(
-            self, text="Not Connected",
+            self,
+            text="Not Connected",
             font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
             text_color=COLORS["text_dim"],
         )
@@ -143,19 +149,25 @@ class StatCard(ctk.CTkFrame):
 
     def __init__(self, parent, title: str, value: str = "\u2014", **kwargs):
         super().__init__(
-            parent, fg_color=COLORS["bg_card"], corner_radius=8,
-            border_width=1, border_color=COLORS["border"], **kwargs
+            parent,
+            fg_color=COLORS["bg_card"],
+            corner_radius=8,
+            border_width=1,
+            border_color=COLORS["border"],
+            **kwargs,
         )
 
         self._title = ctk.CTkLabel(
-            self, text=title,
+            self,
+            text=title,
             font=ctk.CTkFont(family="Segoe UI", size=10),
             text_color=COLORS["text_secondary"],
         )
         self._title.pack(padx=10, pady=(8, 1), anchor="w")
 
         self._value = ctk.CTkLabel(
-            self, text=value,
+            self,
+            text=value,
             font=ctk.CTkFont(family="Segoe UI Semibold", size=15, weight="bold"),
             text_color=COLORS["text_primary"],
         )
@@ -173,12 +185,17 @@ class DeviceInfoPanel(ctk.CTkFrame):
 
     def __init__(self, parent, **kwargs):
         super().__init__(
-            parent, fg_color=COLORS["bg_card"], corner_radius=8,
-            border_width=1, border_color=COLORS["border"], **kwargs
+            parent,
+            fg_color=COLORS["bg_card"],
+            corner_radius=8,
+            border_width=1,
+            border_color=COLORS["border"],
+            **kwargs,
         )
 
         header = ctk.CTkLabel(
-            self, text="Device",
+            self,
+            text="Device",
             font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
             text_color=COLORS["text_secondary"],
         )
@@ -193,14 +210,19 @@ class DeviceInfoPanel(ctk.CTkFrame):
             row.pack(fill="x", pady=1)
 
             lbl = ctk.CTkLabel(
-                row, text=f"{label}:", width=55, anchor="w",
+                row,
+                text=f"{label}:",
+                width=55,
+                anchor="w",
                 font=ctk.CTkFont(family="Segoe UI", size=11),
                 text_color=COLORS["text_dim"],
             )
             lbl.pack(side="left")
 
             val = ctk.CTkLabel(
-                row, text="\u2014", anchor="w",
+                row,
+                text="\u2014",
+                anchor="w",
                 font=ctk.CTkFont(family="Segoe UI", size=11),
                 text_color=COLORS["text_primary"],
             )
@@ -218,11 +240,16 @@ class DeviceInfoPanel(ctk.CTkFrame):
         if stats.battery_temp_c is not None:
             temp_c = stats.battery_temp_c
             temp_str = f"{temp_c:.1f}°C"
-            color = {"green": COLORS["accent_green"], "yellow": COLORS["accent_yellow"],
-                     "red": COLORS["error"]}.get(temperature_zone(temp_c), COLORS["text_primary"])
+            color = {
+                "green": COLORS["accent_green"],
+                "yellow": COLORS["accent_yellow"],
+                "red": COLORS["error"],
+            }.get(temperature_zone(temp_c), COLORS["text_primary"])
             self._fields["Temperature"].configure(text=temp_str, text_color=color)
         else:
-            self._fields["Temperature"].configure(text="\u2014", text_color=COLORS["text_primary"])
+            self._fields["Temperature"].configure(
+                text="\u2014", text_color=COLORS["text_primary"]
+            )
         self._fields["VPN IP"].configure(text=stats.vpn_ip or "\u2014")
 
     def clear(self):
@@ -237,21 +264,30 @@ class LogPanel(ctk.CTkFrame):
 
     def __init__(self, parent, **kwargs):
         super().__init__(
-            parent, fg_color=COLORS["bg_card"], corner_radius=8,
-            border_width=1, border_color=COLORS["border"], **kwargs
+            parent,
+            fg_color=COLORS["bg_card"],
+            corner_radius=8,
+            border_width=1,
+            border_color=COLORS["border"],
+            **kwargs,
         )
 
         header = ctk.CTkLabel(
-            self, text="Log",
+            self,
+            text="Log",
             font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
             text_color=COLORS["text_secondary"],
         )
         header.pack(padx=12, pady=(8, 2), anchor="w")
 
         self._textbox = ctk.CTkTextbox(
-            self, font=ctk.CTkFont(family="Consolas", size=10),
-            fg_color=COLORS["bg_dark"], text_color=COLORS["text_secondary"],
-            corner_radius=6, height=100, state="disabled",
+            self,
+            font=ctk.CTkFont(family="Consolas", size=10),
+            fg_color=COLORS["bg_dark"],
+            text_color=COLORS["text_secondary"],
+            corner_radius=6,
+            height=100,
+            state="disabled",
             border_width=0,
         )
         self._textbox.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -359,7 +395,8 @@ class QuestTetherApp(ctk.CTk):
         header_frame.pack(fill="x", padx=pad, pady=(14, 0))
 
         title_label = ctk.CTkLabel(
-            header_frame, text="Quest Tether",
+            header_frame,
+            text="Quest Tether",
             font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
             text_color=COLORS["text_primary"],
         )
@@ -367,7 +404,8 @@ class QuestTetherApp(ctk.CTk):
 
         # ADB status indicator (top right)
         self._adb_status = ctk.CTkLabel(
-            header_frame, text="ADB: ...",
+            header_frame,
+            text="ADB: ...",
             font=ctk.CTkFont(family="Segoe UI", size=10),
             text_color=COLORS["text_dim"],
         )
@@ -386,23 +424,27 @@ class QuestTetherApp(ctk.CTk):
 
         self._auto_connect_var = ctk.BooleanVar(value=True)
         self._auto_connect_switch = ctk.CTkSwitch(
-            switches_frame, text="Auto",
+            switches_frame,
+            text="Auto",
             font=ctk.CTkFont(family="Segoe UI", size=10),
             text_color=COLORS["text_secondary"],
             variable=self._auto_connect_var,
             command=self._toggle_auto_connect,
-            width=36, height=18,
+            width=36,
+            height=18,
         )
         self._auto_connect_switch.pack(side="right", padx=(8, 0))
 
         self._auto_reconnect_var = ctk.BooleanVar(value=True)
         self._auto_reconnect_switch = ctk.CTkSwitch(
-            switches_frame, text="Reconnect",
+            switches_frame,
+            text="Reconnect",
             font=ctk.CTkFont(family="Segoe UI", size=10),
             text_color=COLORS["text_secondary"],
             variable=self._auto_reconnect_var,
             command=self._toggle_auto_reconnect,
-            width=36, height=18,
+            width=36,
+            height=18,
         )
         self._auto_reconnect_switch.pack(side="right", padx=(8, 0))
 
@@ -423,11 +465,13 @@ class QuestTetherApp(ctk.CTk):
             "Headset Wi-Fi: leave": "leave",
         }
         self._wifi_menu = ctk.CTkOptionMenu(
-            switches_frame, values=list(self._wifi_labels),
+            switches_frame,
+            values=list(self._wifi_labels),
             command=self._on_wifi_mode,
             font=ctk.CTkFont(family="Segoe UI", size=10),
             dropdown_font=ctk.CTkFont(family="Segoe UI", size=10),
-            width=150, height=20,
+            width=150,
+            height=20,
         )
         self._wifi_menu.set("Headset Wi-Fi: off")
         self._wifi_menu.pack(side="right")
@@ -437,16 +481,21 @@ class QuestTetherApp(ctk.CTk):
         btn_frame.pack(fill="x", padx=pad, pady=(10, 0))
 
         self._connect_btn = ctk.CTkButton(
-            btn_frame, text="Connect", height=38,
+            btn_frame,
+            text="Connect",
+            height=38,
             font=ctk.CTkFont(family="Segoe UI Semibold", size=14),
-            fg_color=COLORS["accent"], hover_color="#c73e52",
-            corner_radius=8, command=self._toggle_connection,
+            fg_color=COLORS["accent"],
+            hover_color="#c73e52",
+            corner_radius=8,
+            command=self._toggle_connection,
         )
         self._connect_btn.pack(fill="x")
 
         # Device detection hint
         self._device_hint = ctk.CTkLabel(
-            btn_frame, text="Plug in your Quest via USB",
+            btn_frame,
+            text="Plug in your Quest via USB",
             font=ctk.CTkFont(family="Segoe UI", size=10),
             text_color=COLORS["text_dim"],
         )
@@ -493,10 +542,14 @@ class QuestTetherApp(ctk.CTk):
     def _initial_check(self):
         """Run initial system checks."""
         if self.adb.is_adb_available():
-            self._adb_status.configure(text="ADB: OK", text_color=COLORS["accent_green"])
+            self._adb_status.configure(
+                text="ADB: OK", text_color=COLORS["accent_green"]
+            )
             self._log_panel.append(f"ADB found")
         else:
-            self._adb_status.configure(text="ADB: Not Found", text_color=COLORS["error"])
+            self._adb_status.configure(
+                text="ADB: Not Found", text_color=COLORS["error"]
+            )
             self._log_panel.append("ADB not found! Place adb.exe in tools/ folder.")
 
         if self.tether.is_relay_available():
@@ -518,6 +571,7 @@ class QuestTetherApp(ctk.CTk):
         """Called when a Quest is detected on USB."""
         if self._quitting:
             return
+
         def _ui():
             if self._quitting:
                 return
@@ -540,8 +594,11 @@ class QuestTetherApp(ctk.CTk):
                 )
                 self._log_panel.append(f"Quest detected: {model} ({serial})")
                 if not self._connected and not self._auto_connect_enabled:
-                    threading.Thread(target=self.tether.restore_wifi_if_flagged,
-                                     args=(serial,), daemon=True).start()
+                    threading.Thread(
+                        target=self.tether.restore_wifi_if_flagged,
+                        args=(serial,),
+                        daemon=True,
+                    ).start()
                 if not self._connected:
                     self._connect_btn.configure(state="normal")
                     if self._auto_connect_enabled and not self._auto_connect_pending:
@@ -549,12 +606,14 @@ class QuestTetherApp(ctk.CTk):
                         self._log_panel.append("Auto-connect triggered...")
                         self._connect_btn.configure(state="disabled")
                         threading.Thread(target=self._do_connect, daemon=True).start()
+
         self.after(0, _ui)
 
     def _on_device_disconnected(self):
         """Called when the Quest is unplugged."""
         if self._quitting:
             return
+
         def _ui():
             if self._quitting:
                 return
@@ -567,12 +626,14 @@ class QuestTetherApp(ctk.CTk):
             if not self._connected:
                 self._connect_btn.configure(state="normal")
             self._log_panel.append("Device disconnected")
+
         self.after(0, _ui)
 
     def _on_state_change(self, state: TetherState, stats: TetherStats):
         """Called when tether state changes."""
         if self._quitting:
             return
+
         def _ui():
             if self._quitting:
                 return
@@ -582,26 +643,34 @@ class QuestTetherApp(ctk.CTk):
                 self._connected = True
                 self._auto_connect_pending = False
                 self._connect_btn.configure(
-                    text="Disconnect", height=44,
-                    font=ctk.CTkFont(family="Segoe UI Semibold", size=15, weight="bold"),
-                    fg_color="#c0392b", hover_color="#e74c3c",
+                    text="Disconnect",
+                    height=44,
+                    font=ctk.CTkFont(
+                        family="Segoe UI Semibold", size=15, weight="bold"
+                    ),
+                    fg_color="#c0392b",
+                    hover_color="#e74c3c",
                     state="normal",
                 )
             elif state in (TetherState.IDLE, TetherState.ERROR):
                 self._connected = False
                 self._auto_connect_pending = False
                 self._connect_btn.configure(
-                    text="Connect", height=38,
+                    text="Connect",
+                    height=38,
                     font=ctk.CTkFont(family="Segoe UI Semibold", size=14),
-                    fg_color=COLORS["accent"], hover_color="#c73e52",
+                    fg_color=COLORS["accent"],
+                    hover_color="#c73e52",
                     state="normal",
                 )
             elif state in (TetherState.STARTING, TetherState.STOPPING):
                 self._connected = False
                 self._connect_btn.configure(
-                    text="Connect", height=38,
+                    text="Connect",
+                    height=38,
                     font=ctk.CTkFont(family="Segoe UI Semibold", size=14),
-                    fg_color=COLORS["accent"], hover_color="#c73e52",
+                    fg_color=COLORS["accent"],
+                    hover_color="#c73e52",
                     state="disabled",
                 )
 
@@ -613,12 +682,14 @@ class QuestTetherApp(ctk.CTk):
                 self._tray_icon.icon = self._create_tray_image(
                     state == TetherState.CONNECTED
                 )
+
         self.after(0, _ui)
 
     def _on_stats_update(self, stats: TetherStats):
         """Called periodically with updated stats."""
         if self._quitting:
             return
+
         def _ui():
             if self._quitting:
                 return
@@ -632,6 +703,7 @@ class QuestTetherApp(ctk.CTk):
 
             if stats.reconnect_count > 0:
                 self._stat_reconnects.set_color(COLORS["accent_yellow"])
+
         self.after(0, _ui)
 
     def _on_log(self, msg: str):
@@ -655,13 +727,18 @@ class QuestTetherApp(ctk.CTk):
             return
         quest = self.adb.find_quest()
         if not quest:
-            self.after(0, lambda: self._log_panel.append("No Quest found. Plug in via USB."))
+            self.after(
+                0, lambda: self._log_panel.append("No Quest found. Plug in via USB.")
+            )
             self.after(0, lambda: self._connect_btn.configure(state="normal"))
             return
         if quest["status"] != "device":
-            self.after(0, lambda: self._log_panel.append(
-                f"Device status: '{quest['status']}'. Check ADB auth on headset."
-            ))
+            self.after(
+                0,
+                lambda: self._log_panel.append(
+                    f"Device status: '{quest['status']}'. Check ADB auth on headset."
+                ),
+            )
             self.after(0, lambda: self._connect_btn.configure(state="normal"))
             return
         self.tether.connect(quest["serial"])
@@ -690,8 +767,11 @@ class QuestTetherApp(ctk.CTk):
         self.tether.wifi_mode = mode
         self._log_panel.append(f"Headset Wi-Fi policy: {mode}")
         if self._connected:
-            threading.Thread(target=self.tether._apply_wifi_policy,
-                             args=(self.tether.stats.device_serial,), daemon=True).start()
+            threading.Thread(
+                target=self.tether._apply_wifi_policy,
+                args=(self.tether.stats.device_serial,),
+                daemon=True,
+            ).start()
 
     def _ui_refresh_loop(self):
         """1-second UI refresh."""
@@ -702,15 +782,19 @@ class QuestTetherApp(ctk.CTk):
             uptime = time.time() - self.tether._start_time
             self._stat_uptime.set_value(format_uptime(uptime))
 
-        if not hasattr(self, '_adb_check_cycle'):
+        if not hasattr(self, "_adb_check_cycle"):
             self._adb_check_cycle = 0
         self._adb_check_cycle += 1
         if self._adb_check_cycle >= 10:
             self._adb_check_cycle = 0
             if self.adb.is_adb_available():
-                self._adb_status.configure(text="ADB: OK", text_color=COLORS["accent_green"])
+                self._adb_status.configure(
+                    text="ADB: OK", text_color=COLORS["accent_green"]
+                )
             else:
-                self._adb_status.configure(text="ADB: Not Found", text_color=COLORS["error"])
+                self._adb_status.configure(
+                    text="ADB: Not Found", text_color=COLORS["error"]
+                )
 
         if HAS_TRAY:
             self._update_tray()
@@ -860,34 +944,11 @@ def _atexit_cleanup():
             pass
 
 
-_instance_mutex = None  # held for the life of the process
-
-
 def _acquire_single_instance() -> bool:
-    """Named-mutex guard. Two copies fight over relay port 31416 and kill each
-    other's relay every few seconds (the connect/reconnect loop). Returns False
-    if another instance already runs; brings its window forward if it can."""
-    global _instance_mutex
-    if os.name != "nt":
-        return True
-    import ctypes
-    kernel32 = ctypes.windll.kernel32
-    kernel32.CreateMutexW.restype = ctypes.c_void_p
-    handle = kernel32.CreateMutexW(None, False, "Local\\QuestTetherSingleInstance")
-    err = kernel32.GetLastError()
-    # 183 = already exists; 5 = exists but owned by a differently-elevated process
-    if err in (183, 5):
-        try:
-            user32 = ctypes.windll.user32
-            hwnd = user32.FindWindowW(None, "Quest Tether")
-            if hwnd:
-                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                user32.SetForegroundWindow(hwnd)
-        except Exception:
-            pass
-        return False
-    _instance_mutex = handle
-    return True
+    """Single-instance guard. Two copies fight over relay port 31416 and kill
+    each other's relay every few seconds (the connect/reconnect loop). Returns
+    False if another instance already runs; Windows brings its window forward."""
+    return qt_platform.current().single_instance("QuestTetherSingleInstance")
 
 
 def main():

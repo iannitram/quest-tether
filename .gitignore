@@ -1,7 +1,9 @@
 build/
 dist/
+node_modules/
 __pycache__/
 *.pyc
 bug_drop_config.py
 tools/*
 !tools/README.md
+.ref/

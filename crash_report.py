@@ -87,12 +87,12 @@ def make_zip(report: dict, log_text: str) -> bytes:
 
 
 def data_dir() -> str:
-    """Return the app's state folder, matching qt_platform's choices."""
-    home = os.path.expanduser("~")
-    if os.name == "nt":
-        return os.path.join(os.environ.get("LOCALAPPDATA", home), "QuestTether")
-    base = os.environ.get("XDG_STATE_HOME") or os.path.join(home, ".local", "state")
-    return os.path.join(base, "quest-tether")
+    """Return the app's state folder from the platform layer (never raises)."""
+    try:
+        import qt_platform
+        return qt_platform.current().data_dir()
+    except Exception:
+        return os.path.join(os.path.expanduser("~"), ".quest-tether")
 
 
 def platform_name() -> str:
