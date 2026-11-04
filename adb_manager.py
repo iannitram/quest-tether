@@ -168,6 +168,15 @@ class ADBManager:
 
         return None
 
+    def find_serial(self) -> Optional[str]:
+        """Serial of the ready Quest, or None (no headset, unauthorized, or offline)."""
+        quest = self.find_quest()
+        if not quest:
+            return None
+        if quest.get("status", "device") != "device":
+            return None
+        return quest.get("serial") or None
+
     def get_device_details(self, serial: str) -> Dict[str, str]:
         """Get device model, battery, and VPN IP. Minimal ADB calls."""
         info = {}

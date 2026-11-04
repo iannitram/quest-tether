@@ -165,6 +165,9 @@ class LinuxPlatform(Platform):
         _lock_handle = handle
         return True
 
+    def uses_tether_service(self) -> bool:
+        return True
+
     def autostart(self) -> bool:
         return os.path.exists(
             linux_paths.autostart_path(os.environ, os.path.expanduser("~"))

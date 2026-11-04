@@ -11,9 +11,9 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `heal.py` | **New.** `Healer`: the pure heal ladder and flap breaker lifted out of the health loop. `now` is passed in, nothing sleeps, and every reading returns `None`, `RestartClient`, `RestartAdbThenClient`, `FullReconnect` or `GiveUp`. | present | M2 |
 | `relay_log.py` | Pure parser: relay "Client #N connected/disconnected" lines and the connected-client set (#62). | new | M1 |
 | `net_sync.py` | Copy the PC's Wi-Fi network to the headset: PC SSID, key and security from the platform layer, then `cmd wifi` on the headset. | present (platform-backed) | M5, M7 |
-| `main.py` | The desktop window (CustomTkinter), dashboard, log panel, tray (pystray + Pillow), single-instance guard (through the platform layer), `--minimized`. | present | M4, M6 |
+| `main.py` | The desktop window (CustomTkinter), dashboard, log panel, tray (pystray + Pillow), single-instance guard (through the platform layer), `--minimized`. On Linux it is a `qtetherd` client when the service answers; with no service it runs the core in-process as before. Windows always runs in-process. | present | M4, M6 |
 | `qt_platform/` | **New.** The platform layer: everything that differs by OS behind one interface (`base.py`: the `Platform` class), with `windows.py` (`WindowsPlatform`) and `linux.py` (`LinuxPlatform`); `current()` in `__init__.py` picks one (Windows, Linux, else `RuntimeError`). Callers in `adb_manager.py`, `tether_manager.py`, `net_sync.py` and `main.py` use it. | present on both OSes | M6, M7 |
-| `qtetherd.py` | **New.** Linux user service that owns the one tether (core in-process) and answers JSON requests on `127.0.0.1:31417` (status, connect, disconnect; the relay's own port is 31416). Clients: the desktop window on Linux, the Decky plugin. | stub | M7, M8 |
+| `qtetherd.py` | **New.** Linux user service that owns the one tether (core in-process) and answers JSON requests on `127.0.0.1:31417` (status, connect, disconnect, wifi-sync, logs, settings-get / settings-set; the relay's own port is 31416). `serve()` builds the one `ADBManager` + `TetherManager`, and a second copy on the port prints one line and exits 1. Clients: the desktop window on Linux, the Decky plugin, the CLI. | present | M7, M8 |
 | `decky/` | **New.** The Decky Loader plugin: `plugin.json`, a Python backend (`main.py`) that is a client of `qtetherd`, and the Quick Access panel (`src/index.tsx`) with the `decky-plugin-template` build config (`package.json`, `rollup.config.js`, `tsconfig.json`). | panel built; backend stub | M8 |
 | `build.spec`, `build.bat` | PyInstaller one-file EXE (Windows). Linux packaging joins it (#10 and the Linux package issue). | present | M9 |
 | `tools/` | Third-party binaries at run time (adb, relay, headset APK). Supplied by the package, never committed (#11). Four are still tracked: `AdbWinApi.dll`, `AdbWinUsbApi.dll`, `gnirehtet.jar`, `gnirehtet.apk`. | to clean (#11) | M9 |
@@ -32,6 +32,7 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `stale_relay_pids(port)` / `kill(pid)` / `kill_tree(pid)` | `netstat -ano` + PowerShell command line + `taskkill` (`kill_tree` adds `/T`) | `ss -ltnp` (or `/proc/net/tcp` + `/proc/<pid>/cmdline`) + `os.kill` |
 | `pc_wifi()` -> `(ssid, key, security)` | `netsh wlan show interfaces` / `show profile key=clear`; `security` is `wpa2` or `wpa3` | `nmcli` on the active Wi-Fi connection: `802-11-wireless.ssid`, `802-11-wireless-security.psk`, `802-11-wireless-security.key-mgmt` (`wpa-psk` -> `wpa2`, `sae` -> `wpa3`) |
 | `single_instance(name)` | named mutex `Local\QuestTetherSingleInstance` (today's code) | a lock file in `data_dir()` (`fcntl.flock`) |
+| `uses_tether_service()` | `False` (the window runs the core) | `True` (the window is a `qtetherd` client) |
 | `autostart()` / `set_autostart(on)` | `HKCU\...\Run` value with `--minimized` | `~/.config/autostart/quest-tether.desktop` with `--minimized` |
 
 Callers stop testing `os.name` and call `qt_platform.current()`.
@@ -56,8 +57,9 @@ flowchart LR
 ```
 
 - On Windows nothing changes in shape: the window runs the core in-process.
-- On Linux the service owns the relay, so the desktop window and Game Mode can't start two relays fighting over port 31416 (the bug the Windows mutex fixed). It runs as a systemd user unit, started at login.
+- On Linux the service owns the relay, so the desktop window and Game Mode can't start two relays fighting over port 31416 (the bug the Windows mutex fixed). It runs as a systemd user unit, started at login. If `request({"cmd": "status"})` gets no answer, the window falls back to the old in-process core.
 - The Decky backend never runs adb or the relay itself; it only forwards status / connect / disconnect.
+- The CLI talks to the same service for status, connect, disconnect, wifi-sync, logs and settings.
 
 ## Mac, PC and Linux
 
@@ -81,5 +83,5 @@ Where it stands (2026-10-28): Dev Loop, nothing past the skeleton built. Open is
 1. Clean the repo and package (#11, then #10); CI on Windows and Linux (CI done). Not started.
 2. Fix the honest Connected state (#1) and add battery temperature (#4). Not started.
 3. The platform layer: Windows implementation from today's code (#13), Linux implementation (#14), callers switched (#15). Done: both implementations and every caller (`adb_manager.py`, `tether_manager.py`, `net_sync.py`, `main.py`).
-4. Linux relay and USB access (#16, #17); `qtetherd` (#18); the Decky plugin (#19, #20); the Linux package (#21). The #20 panel and its build config are in; the rest are stubs.
+4. Linux relay and USB access (#16, #17); `qtetherd` (#18); the Decky plugin (#19, #20); the Linux package (#21). The #20 panel and its build config, the `qtetherd` service and the Linux window client (#38) are in; the relay, udev and package parts are stubs.
 5. Device checks on both OSes: reconnect (#2, with #6's answer), soak (#3), the questions (#7, #8, #9). Need the headset; not started.
