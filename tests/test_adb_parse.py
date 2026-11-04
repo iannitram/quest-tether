@@ -1,7 +1,9 @@
 """adb devices parsing and the Linux udev rule files (no adb, no headset): python -m unittest discover tests"""
 import os
+import subprocess
 import sys
 import unittest
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import adb_manager  # noqa: E402
@@ -29,6 +31,72 @@ class ParseDevices(unittest.TestCase):
         text = str(TEXT)
         adb_manager.parse_devices(text)
         self.assertEqual(text, TEXT)
+
+
+class AmStartClient(unittest.TestCase):
+    def make_manager(self):
+        platform = Mock()
+        platform.no_window_flags.return_value = 0
+        return adb_manager.ADBManager(adb_path="adb", platform=platform)
+
+    @staticmethod
+    def result(returncode=0, stdout="", stderr=""):
+        return subprocess.CompletedProcess([], returncode, stdout, stderr)
+
+    def test_start_refused_with_activity_error_returns_false(self):
+        manager = self.make_manager()
+        outputs = [
+            self.result(),
+            self.result(
+                stdout="Starting: Intent { ... }\n"
+                "Error: Activity class {com.genymobile.gnirehtet/"
+                "com.genymobile.gnirehtet.GnirehtetActivity} does not exist.\n"
+            ),
+        ]
+        with patch.object(manager, "run_adb", side_effect=outputs):
+            self.assertFalse(manager.start_gnirehtet_client("quest-serial"))
+        self.assertEqual(
+            manager.last_client_error,
+            "Error: Activity class {com.genymobile.gnirehtet/"
+            "com.genymobile.gnirehtet.GnirehtetActivity} does not exist.",
+        )
+
+    def test_start_refused_with_error_type_3_returns_false(self):
+        manager = self.make_manager()
+        outputs = [self.result(), self.result(stderr="Error type 3\n")]
+        with patch.object(manager, "run_adb", side_effect=outputs):
+            self.assertFalse(manager.start_gnirehtet_client("quest-serial"))
+        self.assertEqual(manager.last_client_error, "Error type 3")
+
+    def test_start_with_normal_output_returns_true(self):
+        manager = self.make_manager()
+        outputs = [
+            self.result(),
+            self.result(
+                stdout="Starting: Intent { act=com.genymobile.gnirehtet.START "
+                "cmp=com.genymobile.gnirehtet/.GnirehtetActivity }\n"
+            ),
+        ]
+        with patch.object(manager, "run_adb", side_effect=outputs):
+            self.assertTrue(manager.start_gnirehtet_client("quest-serial"))
+        self.assertIsNone(manager.last_client_error)
+
+    def test_start_with_empty_output_keeps_the_return_code(self):
+        manager = self.make_manager()
+        with patch.object(
+            manager, "run_adb", side_effect=[self.result(), self.result()]
+        ):
+            self.assertTrue(manager.start_gnirehtet_client("quest-serial"))
+
+    def test_stop_refused_returns_false(self):
+        manager = self.make_manager()
+        with patch.object(
+            manager,
+            "run_adb",
+            return_value=self.result(stdout="Error: not installed\n"),
+        ):
+            self.assertFalse(manager.stop_gnirehtet_client("quest-serial"))
+        self.assertEqual(manager.last_client_error, "Error: not installed")
 
 
 class UdevFiles(unittest.TestCase):

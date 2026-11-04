@@ -1,0 +1,6 @@
+Quest Tether
+
+This product includes a pattern derived from gnirehtet-gui, licensed under
+the Apache License, Version 2.0:
+
+- Detection of `Error:` output from `adb shell am start` client intents.

@@ -3,6 +3,7 @@ ADB Device Manager
 Handles Quest detection, ADB commands, and USB state monitoring.
 """
 
+import logging
 import subprocess
 import sys
 import threading
@@ -11,7 +12,10 @@ import os
 import re
 from typing import Optional, Callable, Dict, List
 
+import am_result
 import qt_platform
+
+logger = logging.getLogger(__name__)
 
 
 def parse_devices(text: str) -> List[Dict[str, str]]:
@@ -85,6 +89,8 @@ class ADBManager:
         self._on_device_connected: Optional[Callable] = None
         self._on_device_disconnected: Optional[Callable] = None
         self._current_serial: Optional[str] = None
+        # The Error line of the last `am start` reply, if Android refused it.
+        self.last_client_error: Optional[str] = None
 
     def _find_adb(self) -> str:
         """Locate ADB binary. Check next to exe (frozen builds) first,
@@ -203,6 +209,15 @@ class ADBManager:
 
         return info
 
+    def _am_start_error(self, result: subprocess.CompletedProcess) -> Optional[str]:
+        # Pattern from gnirehtet-gui (Apache-2.0): `am start` exits 0 even when
+        # Android refuses the intent, so the reply text is the real verdict.
+        error = am_result.am_start_error(result.stdout, result.stderr)
+        self.last_client_error = error
+        if error:
+            logger.warning("%s", error)
+        return error
+
     def stop_gnirehtet_client(self, serial: str) -> bool:
         """Stop the gnirehtet VPN client on the device."""
         result = self.run_adb(
@@ -216,6 +231,8 @@ class ADBManager:
             "-a",
             "com.genymobile.gnirehtet.STOP",
         )
+        if self._am_start_error(result):
+            return False
         return result.returncode == 0
 
     def start_gnirehtet_client(self, serial: str, port: int = 31416) -> bool:
@@ -236,6 +253,8 @@ class ADBManager:
             "-a",
             "com.genymobile.gnirehtet.START",
         )
+        if self._am_start_error(result):
+            return False
         return result.returncode == 0
 
     def restart_adb_server(self) -> None:

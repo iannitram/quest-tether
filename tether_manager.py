@@ -198,6 +198,12 @@ class TetherManager:
         if self._on_log:
             self._on_log(msg)
 
+    def _log_client_start_refused(self):
+        error = getattr(self.adb, "last_client_error", None)
+        if not isinstance(error, str) or not error:
+            error = "unknown error"
+        self._log(f"client start refused: {error}")
+
     def _set_state(self, state: TetherState, error: str = ""):
         self.stats.state = state
         if error:
@@ -356,15 +362,17 @@ class TetherManager:
             # tun0 never appeared but the relay is alive: `gnirehtet run` only tries
             # the Quest-side client start once, so re-issue it ourselves.
             self._log("tun0 not detected — re-issuing client start")
-            self.adb.start_gnirehtet_client(serial, self.RELAY_PORT)
-            for i in range(8):
-                time.sleep(1.5)
-                if self.adb.is_vpn_up(serial):
-                    tun0_present = True
-                    self._log("tun0 up after client re-start")
-                    break
+            if self.adb.start_gnirehtet_client(serial, self.RELAY_PORT):
+                for i in range(8):
+                    time.sleep(1.5)
+                    if self.adb.is_vpn_up(serial):
+                        tun0_present = True
+                        self._log("tun0 up after client re-start")
+                        break
+                else:
+                    self._log("tun0 still missing — health monitor will keep trying")
             else:
-                self._log("tun0 still missing — health monitor will keep trying")
+                self._log_client_start_refused()
 
         # Cache device details — only full ADB detail fetch of the session
         details = self.adb.get_device_details(serial)
@@ -559,17 +567,25 @@ class TetherManager:
                 self._attempt_reconnect(serial)
                 return not self._running
 
+        start_refused = False
         if action is Heal.RESTART_CLIENT:
             self._log("tun0 missing while relay is up — re-issuing client start")
-            self.adb.start_gnirehtet_client(serial, self.RELAY_PORT)
+            if not self.adb.start_gnirehtet_client(serial, self.RELAY_PORT):
+                self._log_client_start_refused()
+                start_refused = True
         elif action is Heal.RESTART_ADB_THEN_CLIENT:
             self._log("Still no tun0 — restarting adb server, then client")
             self.adb.restart_adb_server()
-            self.adb.start_gnirehtet_client(serial, self.RELAY_PORT)
+            if not self.adb.start_gnirehtet_client(serial, self.RELAY_PORT):
+                self._log_client_start_refused()
+                start_refused = True
         else:
             self._log("Client restarts didn't stick — full relay reconnect")
             self._attempt_reconnect(serial)
             return not self._running
+
+        if start_refused:
+            return False
 
         for _ in range(6):
             time.sleep(1.5)
@@ -738,8 +754,11 @@ class TetherManager:
             self._running = False
             return
 
+        if self._reconnect_attempts == 0:
+            # Count outages, not attempts: every retry inside one drop is still
+            # the same reconnect from the user's point of view (#79).
+            self.stats.reconnect_count += 1
         self._reconnect_attempts += 1
-        self.stats.reconnect_count += 1
         self._set_state(TetherState.RECONNECTING)
         self._log(
             f"Reconnect attempt {self._reconnect_attempts}/{self.MAX_RECONNECT_ATTEMPTS}"

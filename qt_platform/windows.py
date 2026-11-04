@@ -173,10 +173,10 @@ class WindowsPlatform(Platform):
                 creationflags=CREATE_NO_WINDOW,
             )
             if r.returncode != 0 or not r.stdout.strip():
-                return True
+                return False
             return "gnirehtet" in r.stdout.lower()
         except Exception:
-            return True
+            return False
 
     def stale_relay_pids(self, port: int) -> List[int]:
         # from tether_manager.TetherManager._kill_stale_process (the netstat scan; the kill is kill())
