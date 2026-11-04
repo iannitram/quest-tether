@@ -12,7 +12,7 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `main.py` | The desktop window (CustomTkinter), dashboard, log panel, tray (pystray + Pillow), single-instance guard (Windows named mutex), `--minimized`. | present | M4, M6 |
 | `qt_platform/` | **New.** The platform layer: everything that differs by OS behind one interface (`base.py`: the `Platform` class, every method raises `NotImplementedError`), with `windows.py` (`WindowsPlatform`) and `linux.py` (`LinuxPlatform`; all nine methods filled in, #33 and #34); `current()` in `__init__.py` picks one (done: Windows, Linux, else `RuntimeError`). Nothing calls it yet. | interface and `current()` present; Linux filled | M6, M7 |
 | `qtetherd.py` | **New.** Linux user service that owns the one tether (core in-process) and answers JSON requests on `127.0.0.1:31417` (status, connect, disconnect; the relay's own port is 31416). Clients: the desktop window on Linux, the Decky plugin. | stub | M7, M8 |
-| `decky/` | **New.** The Decky Loader plugin: `plugin.json`, a Python backend (`main.py`) that is a client of `qtetherd`, and the Quick Access panel (`src/index.tsx`). | stubs | M8 |
+| `decky/` | **New.** The Decky Loader plugin: `plugin.json`, a Python backend (`main.py`) that is a client of `qtetherd`, and the Quick Access panel (`src/index.tsx`) with the `decky-plugin-template` build config (`package.json`, `rollup.config.js`, `tsconfig.json`). | panel built; backend stub | M8 |
 | `build.spec`, `build.bat` | PyInstaller one-file EXE (Windows). Linux packaging joins it (#10 and the Linux package issue). | present | M9 |
 | `tools/` | Third-party binaries at run time (adb, relay, headset APK). Supplied by the package, never committed (#11). Four are still tracked: `AdbWinApi.dll`, `AdbWinUsbApi.dll`, `gnirehtet.jar`, `gnirehtet.apk`. | to clean (#11) | M9 |
 | `tests/` | **New.** Unit tests that need no headset (platform selection, temperature zones, parsing). `test_platform.py` (platform selection) is there; the rest arrive with their issues (#4, #17, #19, ...). CI runs them with `python -m unittest discover -s tests`. | present (1 file) | all |
@@ -77,5 +77,5 @@ Where it stands (2026-10-28): Dev Loop, nothing past the skeleton built. Open is
 1. Clean the repo and package (#11, then #10); CI on Windows and Linux (CI done). Not started.
 2. Fix the honest Connected state (#1) and add battery temperature (#4). Not started.
 3. The platform layer: Windows implementation from today's code (#13), Linux implementation (#14), callers switched (#15). Skeleton only (`qt_platform/` stubs).
-4. Linux relay and USB access (#16, #17); `qtetherd` (#18); the Decky plugin (#19, #20); the Linux package (#21). Stubs only.
+4. Linux relay and USB access (#16, #17); `qtetherd` (#18); the Decky plugin (#19, #20); the Linux package (#21). The #20 panel and its build config are in; the rest are stubs.
 5. Device checks on both OSes: reconnect (#2, with #6's answer), soak (#3), the questions (#7, #8, #9). Need the headset; not started.
