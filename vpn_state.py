@@ -1,6 +1,8 @@
 """Pure parser for the gnirehtet VPN agent state in `dumpsys connectivity` output (#64)."""
+import re
 
 _STATE = "ni{VPN "
+_SESSION = re.compile(r"sessionId=Gnirehtet[,\s}>]")
 
 
 def gnirehtet_vpn_state(text: str | None) -> str | None:
@@ -8,7 +10,7 @@ def gnirehtet_vpn_state(text: str | None) -> str | None:
     if not text:
         return None
     for line in text.splitlines():
-        if _STATE not in line or "sessionId=Gnirehtet" not in line:
+        if _STATE not in line or not _SESSION.search(line):
             continue
         rest = line.split(_STATE, 1)[1]
         state = ""
@@ -23,6 +25,8 @@ def gnirehtet_vpn_state(text: str | None) -> str | None:
 
 
 def vpn_closed(text: str | None) -> bool:
-    """True when no gnirehtet VPN agent is up: gnirehtet_vpn_state(text) is None or "DISCONNECTED"."""
+    """True when a real read shows no gnirehtet VPN agent up: gnirehtet_vpn_state(text) is None or "DISCONNECTED". None or text that is empty after .strip() is not proof the VPN is closed: False."""
+    if text is None or not text.strip():
+        return False
     state = gnirehtet_vpn_state(text)
     return state is None or state == "DISCONNECTED"
