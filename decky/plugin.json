@@ -1,7 +1,8 @@
 {
   "name": "Quest Tether",
-  "author": "iannitram",
+  "author": "Quest Tether contributors",
   "flags": [],
+  "api_version": 1,
   "publish": {
     "tags": ["network", "vr"],
     "description": "Tether a Meta Quest to this machine over USB: state, battery temperature, Connect and Disconnect.",

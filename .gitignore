@@ -1,6 +1,8 @@
 build/
 dist/
+node_modules/
 __pycache__/
 *.pyc
 tools/*
 !tools/README.md
+.ref/
