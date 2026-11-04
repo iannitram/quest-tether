@@ -256,7 +256,10 @@ class StaleRelayPids(unittest.TestCase):
             ]
         )
         with mock.patch("subprocess.run", side_effect=_fake_run(netstat, {}, [])):
-            self.assertEqual(WindowsPlatform().stale_relay_pids(31416), [])
+            with self.assertLogs("qt_platform.windows", level="INFO") as logs:
+                self.assertEqual(WindowsPlatform().stale_relay_pids(31416), [])
+        self.assertTrue(any("command line unreadable" in line for line in logs.output))
+        self.assertFalse(any("which is not gnirehtet" in line for line in logs.output))
 
     def test_command_line_lookup_error_is_not_gnirehtet(self):
         """A failed PowerShell query also fails closed."""

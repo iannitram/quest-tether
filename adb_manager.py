@@ -91,6 +91,8 @@ class ADBManager:
         self._current_serial: Optional[str] = None
         # The Error line of the last `am start` reply, if Android refused it.
         self.last_client_error: Optional[str] = None
+        # The exit code of that same call, for failures with no Error line.
+        self.last_client_exit_code: Optional[int] = None
 
     def _find_adb(self) -> str:
         """Locate ADB binary. Check next to exe (frozen builds) first,
@@ -212,6 +214,7 @@ class ADBManager:
     def _am_start_error(self, result: subprocess.CompletedProcess) -> Optional[str]:
         # Pattern from gnirehtet-gui (Apache-2.0): `am start` exits 0 even when
         # Android refuses the intent, so the reply text is the real verdict.
+        self.last_client_exit_code = result.returncode
         error = am_result.am_start_error(result.stdout, result.stderr)
         self.last_client_error = error
         if error:

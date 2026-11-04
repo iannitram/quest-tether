@@ -200,11 +200,17 @@ class TetherManager:
 
     def _log_client_start_refused(self):
         error = getattr(self.adb, "last_client_error", None)
-        if not isinstance(error, str) or not error:
-            error = "unknown error"
-        self._log(f"client start refused: {error}")
+        if isinstance(error, str) and error:
+            self._log(f"client start refused: {error}")
+            return
+        code = getattr(self.adb, "last_client_exit_code", None)
+        self._log(f"client start failed (exit code {code})")
 
     def _set_state(self, state: TetherState, error: str = ""):
+        if state is TetherState.CONNECTED:
+            # Any route back to Connected starts a new outage, so the next
+            # drop gets the full reconnect budget.
+            self._reconnect_attempts = 0
         self.stats.state = state
         if error:
             self.stats.last_error = error
@@ -524,8 +530,10 @@ class TetherManager:
         return self._healer.note_recovery(time.time())
 
     def _trip(self, reason: str):
-        self._log(f"Connection is flapping ({self.FLAP_LIMIT}+ recoveries in "
-                  f"{int(self.FLAP_WINDOW // 60)} min, last: {reason}) — stopping auto-recovery")
+        self._log(
+            f"Connection is flapping ({self.FLAP_LIMIT}+ recoveries in "
+            f"{int(self.FLAP_WINDOW // 60)} min, last: {reason}) — stopping auto-recovery"
+        )
         self._set_state(
             TetherState.ERROR,
             "Tether keeps dropping — check the USB cable/port, that only one Quest Tether "
@@ -547,7 +555,9 @@ class TetherManager:
         if action is Heal.GIVE_UP:
             if self._healer.trip_reason == "reconnects":
                 self._log("Client restarts didn't stick — full relay reconnect")
-                self._log(f"Max reconnect attempts ({self.MAX_RECONNECT_ATTEMPTS}) reached")
+                self._log(
+                    f"Max reconnect attempts ({self.MAX_RECONNECT_ATTEMPTS}) reached"
+                )
                 self._set_state(TetherState.ERROR, "Max reconnect attempts reached")
                 self._running = False
             else:
@@ -591,6 +601,7 @@ class TetherManager:
             time.sleep(1.5)
             if self.adb.is_vpn_up(serial):
                 self._log("Tunnel restored")
+                self._reconnect_attempts = 0
                 self._set_state(TetherState.CONNECTED)
                 self._prev_stat_time = 0  # don't compute a rate across the gap
                 return False
@@ -799,7 +810,9 @@ class TetherManager:
                 return
             if i == 4:
                 self._log("tun0 slow — re-issuing client start")
-                self.adb.start_gnirehtet_client(actual_serial, self.RELAY_PORT)
+                if not self.adb.start_gnirehtet_client(actual_serial, self.RELAY_PORT):
+                    self._log_client_start_refused()
+                    return
             time.sleep(1.5)
 
         self._log("Reconnect: tun0 not detected — will retry")

@@ -6,7 +6,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tether_manager import TetherManager  # noqa: E402
+from heal import Heal  # noqa: E402
+from tether_manager import TetherManager, TetherState  # noqa: E402
 
 
 class FakeAdb:
@@ -45,6 +46,32 @@ class ReconnectCount(unittest.TestCase):
         self.assertIn("Reconnect attempt 2/10", logs)
         self.assertEqual(
             manager._reconnect_attempts, 0, "a successful reconnect starts a new outage"
+        )
+
+    @patch("tether_manager.time.sleep", return_value=None)
+    def test_a_successful_heal_clears_the_reconnect_attempts(self, _sleep):
+        adb = Mock()
+        adb.find_quest.return_value = {"serial": "quest-serial", "status": "device"}
+        adb.start_gnirehtet_client.return_value = True
+        adb.is_vpn_up.return_value = True
+        manager = TetherManager(adb, gnirehtet_path="fake.jar")
+        manager._reconnect_attempts = 4
+
+        manager._heal("quest-serial", Heal.RESTART_CLIENT)
+
+        self.assertEqual(
+            manager._reconnect_attempts, 0, "tunnel restored starts a new outage"
+        )
+
+    def test_any_return_to_connected_clears_the_reconnect_attempts(self):
+        adb = Mock()
+        manager = TetherManager(adb, gnirehtet_path="fake.jar")
+        manager._reconnect_attempts = 4
+
+        manager._set_state(TetherState.CONNECTED)
+
+        self.assertEqual(
+            manager._reconnect_attempts, 0, "Connected means the outage is over"
         )
 
 
