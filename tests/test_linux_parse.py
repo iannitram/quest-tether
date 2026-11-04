@@ -1,11 +1,18 @@
 """Linux output parsers (no headset, no nmcli, no ss): python -m unittest discover -s tests"""
+import os
 import sys
 import unittest
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from qt_platform.linux_parse import (  # noqa: E402
-    cmdline_mentions_gnirehtet, parse_active_ssid, parse_active_wifi_connection, parse_psk,
-    parse_ss_pids, parse_ssid_field)
+    cmdline_mentions_gnirehtet,
+    parse_active_ssid,
+    parse_active_wifi_connection,
+    parse_psk,
+    parse_security,
+    parse_ss_pids,
+    parse_ssid_field,
+)
 
 SS = (
     "State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n"
@@ -19,7 +26,9 @@ SS = (
 
 class ActiveSsid(unittest.TestCase):
     def test_picks_the_yes_line(self):
-        self.assertEqual(parse_active_ssid("no:Other\nyes:ExampleNet\nno:Third\n"), "ExampleNet")
+        self.assertEqual(
+            parse_active_ssid("no:Other\nyes:ExampleNet\nno:Third\n"), "ExampleNet"
+        )
 
     def test_first_yes_line_wins(self):
         self.assertEqual(parse_active_ssid("yes:A\nyes:B\n"), "A")
@@ -39,10 +48,17 @@ class ActiveSsid(unittest.TestCase):
 
 class ActiveWifiConnection(unittest.TestCase):
     def test_picks_the_wifi_line_not_ethernet(self):
-        self.assertEqual(parse_active_wifi_connection("Wired:802-3-ethernet\nWi-Fi 2:802-11-wireless\n"), "Wi-Fi 2")
+        self.assertEqual(
+            parse_active_wifi_connection(
+                "Wired:802-3-ethernet\nWi-Fi 2:802-11-wireless\n"
+            ),
+            "Wi-Fi 2",
+        )
 
     def test_unescapes_colon_in_the_name(self):
-        self.assertEqual(parse_active_wifi_connection("Home\\:5G:802-11-wireless\n"), "Home:5G")
+        self.assertEqual(
+            parse_active_wifi_connection("Home\\:5G:802-11-wireless\n"), "Home:5G"
+        )
 
     def test_no_wifi_line_is_none(self):
         self.assertIsNone(parse_active_wifi_connection("lo:loopback\n"))
@@ -78,6 +94,24 @@ class Psk(unittest.TestCase):
     def test_empty_is_none(self):
         self.assertIsNone(parse_psk(""))
         self.assertIsNone(parse_psk("\n"))
+
+
+class Security(unittest.TestCase):
+    def test_sae_is_wpa3(self):
+        self.assertEqual(parse_security("sae\n"), "wpa3")
+
+    def test_wpa_psk_is_wpa2(self):
+        self.assertEqual(parse_security("wpa-psk\n"), "wpa2")
+
+    def test_strips_and_lowercases(self):
+        self.assertEqual(parse_security(" WPA-PSK \r\n"), "wpa2")
+
+    def test_unknown_key_mgmt_is_none(self):
+        self.assertIsNone(parse_security("none\n"))
+
+    def test_empty_is_none(self):
+        self.assertIsNone(parse_security(""))
+        self.assertIsNone(parse_security("\n"))
 
 
 class SsPids(unittest.TestCase):

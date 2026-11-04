@@ -1,9 +1,10 @@
 """Linux paths, relay command, autostart entry (pure, no filesystem): python -m unittest discover -s tests"""
+import os
 import sys
 import types
 import unittest
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from qt_platform.linux_paths import (  # noqa: E402
     autostart_command, autostart_entry, autostart_path, data_dir_path, relay_command)
 

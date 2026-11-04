@@ -1,8 +1,9 @@
 """Crash report scrubber: planted secrets must not survive (no network): python -m unittest discover -s tests"""
+import os
 import sys
 import unittest
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from crash_scrub import scrub  # noqa: E402
 
 HOME = "/home/someone"

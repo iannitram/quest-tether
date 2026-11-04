@@ -2,16 +2,21 @@
 
 import sys
 import threading
+import traceback
 from typing import Callable, Optional, Any
 
 # Module-level variables to store original hooks
 _original_excepthook: Optional[Callable] = None
 _original_threading_excepthook: Optional[Callable] = None
+_wait: Optional[Callable] = None
 
 
-def install(sink: Callable[[type, BaseException, Any], None]) -> None:
+def install(
+    sink: Callable[[type, BaseException, Any], None],
+    wait: Optional[Callable] = None,
+) -> None:
     """Install crash hooks to report exceptions through the given sink."""
-    global _original_excepthook, _original_threading_excepthook
+    global _original_excepthook, _original_threading_excepthook, _wait
 
     # Uninstall if already installed
     uninstall()
@@ -19,16 +24,19 @@ def install(sink: Callable[[type, BaseException, Any], None]) -> None:
     # Store original hooks
     _original_excepthook = sys.excepthook
     _original_threading_excepthook = threading.excepthook
+    _wait = wait
 
     # Install new hooks
     def sys_hook(exc_type, exc, tb):
-        _report(sink, exc_type, exc, tb)
+        if _report(sink, exc_type, exc, tb):
+            _wait_for_upload()
         # Call the original hook
         if _original_excepthook is not None:
             _original_excepthook(exc_type, exc, tb)
 
     def threading_hook(args):
-        _report(sink, args.exc_type, args.exc_value, args.exc_traceback)
+        if _report(sink, args.exc_type, args.exc_value, args.exc_traceback):
+            _wait_for_upload()
         # Call the original hook
         if _original_threading_excepthook is not None:
             _original_threading_excepthook(args)
@@ -39,7 +47,7 @@ def install(sink: Callable[[type, BaseException, Any], None]) -> None:
 
 def uninstall() -> None:
     """Uninstall crash hooks, restoring original hooks."""
-    global _original_excepthook, _original_threading_excepthook
+    global _original_excepthook, _original_threading_excepthook, _wait
 
     if _original_excepthook is not None:
         sys.excepthook = _original_excepthook
@@ -49,18 +57,25 @@ def uninstall() -> None:
         threading.excepthook = _original_threading_excepthook
         _original_threading_excepthook = None
 
+    _wait = None
 
-def _report(sink: Callable[[type, BaseException, Any], None], exc_type: type, exc: BaseException, tb: Any) -> None:
+
+def _report(
+    sink: Callable[[type, BaseException, Any], None],
+    exc_type: type,
+    exc: BaseException,
+    tb: Any,
+) -> bool:
     """Report exception through sink, with filtering and deduplication."""
     # Skip KeyboardInterrupt and SystemExit
     if issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
-        return
+        return False
 
     # Skip if already reported
     try:
-        if getattr(exc, '_crash_hook_reported', False):
-            return
-        setattr(exc, '_crash_hook_reported', True)
+        if getattr(exc, "_crash_hook_reported", False):
+            return False
+        setattr(exc, "_crash_hook_reported", True)
     except Exception:
         # If we can't mark as reported, continue anyway
         pass
@@ -68,14 +83,28 @@ def _report(sink: Callable[[type, BaseException, Any], None], exc_type: type, ex
     # Report through sink
     try:
         sink(exc_type, exc, tb)
+        return True
     except BaseException:
         # If sink fails (even with SystemExit or KeyboardInterrupt), don't let it stop the original hook
+        return False
+
+
+def _wait_for_upload() -> None:
+    if _wait is None:
+        return
+    try:
+        _wait()
+    except BaseException:
         pass
 
 
 def tk_callback(sink: Callable[[type, BaseException, Any], None]) -> Callable:
     """Returns a callback function for tkinter that reports exceptions."""
+
     def cb(self, exc_type, exc, tb):
-        _report(sink, exc_type, exc, tb)
+        traceback.print_exception(exc_type, exc, tb)
+        if _report(sink, exc_type, exc, tb):
+            _wait_for_upload()
         return None
+
     return cb

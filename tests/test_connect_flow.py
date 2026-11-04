@@ -1,7 +1,10 @@
 """Flow tests for connect and tunnel health without external dependencies."""
+import os
+import sys
 import unittest
 from unittest.mock import Mock, patch
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tether_manager
 from tether_manager import TetherManager, TetherState
 

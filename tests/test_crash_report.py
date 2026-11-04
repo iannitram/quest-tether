@@ -1,12 +1,13 @@
 """Crash report name, fields and zip (no network, no files): python -m unittest discover -s tests"""
 import io
 import json
+import os
 import sys
 import unittest
 import zipfile
 from datetime import datetime
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from crash_report import build_report, last_lines, make_zip, report_filename  # noqa: E402
 
 NOW = datetime(2026, 10, 31, 12, 34, 56)

@@ -1,8 +1,9 @@
 """qtetherd request handling against a fake tether (no headset, no sockets): python -m unittest discover -s tests"""
+import os
 import sys
 import unittest
 
-sys.path.insert(0, ".")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import qtetherd  # noqa: E402
 from tether_manager import TetherState, TetherStats  # noqa: E402
 

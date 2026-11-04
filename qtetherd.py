@@ -9,10 +9,13 @@ Clients: main.py's window on Linux and the Decky plugin's backend.
 """
 
 import json
+import logging
+import os
 import socket
 import socketserver
 from typing import Any, Callable
 
+import crash_report
 from tether_manager import temperature_zone
 
 HOST = "127.0.0.1"
@@ -79,6 +82,18 @@ def make_server(handler: Callable[[Any], dict], host: str = HOST, port: int = PO
 
 def serve(host: str = HOST, port: int = PORT) -> None:
     """Run the service until stopped."""
+    log_path = os.path.join(crash_report.data_dir(), "qtetherd.log")
+    try:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+    except OSError:
+        handler = logging.StreamHandler()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[logging.StreamHandler(), handler],
+    )
+    crash_report.install(log_path=log_path)
     raise NotImplementedError
 
 
