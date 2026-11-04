@@ -62,6 +62,35 @@ class Serve(unittest.TestCase):
         message = err.getvalue().strip().splitlines()[-1]
         self.assertEqual(message, "qtetherd: port 31417 is already in use")
 
+    def _serve(self, auto_reconnect):
+        adb = Mock()
+        adb.find_serial = Mock(return_value="SERIAL")
+        tether = Mock()
+        tether.auto_reconnect = auto_reconnect
+        server = Mock()
+        with (
+            patch("qtetherd.ADBManager", return_value=adb),
+            patch("qtetherd.TetherManager", return_value=tether),
+            patch("qtetherd.make_server", return_value=server),
+        ):
+            qtetherd.serve()
+        return adb, tether
+
+    def test_auto_reconnect_starts_usb_monitoring_with_callbacks(self):
+        adb, tether = self._serve(True)
+
+        adb.start_monitoring.assert_called_once()
+        callbacks = adb.start_monitoring.call_args.kwargs
+        callbacks["on_connected"]({"serial": "HEADSET", "status": "device"})
+        tether.connect.assert_called_once_with("HEADSET")
+        callbacks["on_disconnected"]()
+        tether.disconnect.assert_called_once_with()
+
+    def test_auto_reconnect_off_does_not_start_usb_monitoring(self):
+        adb, _ = self._serve(False)
+
+        adb.start_monitoring.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

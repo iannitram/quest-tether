@@ -1,10 +1,12 @@
 """qtetherd request handling against a fake tether (no headset; loopback only): python -m unittest discover -s tests"""
 
+import json
 import os
 import sys
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,6 +31,29 @@ class FakeTether:
         self.calls.append(("disconnect",))
 
 
+class LockProbeTether:
+    """Records whether the shared tether lock is held at each manager call."""
+
+    def __init__(self, stats):
+        self._stats = stats
+        self.adb = object()
+        self.auto_reconnect = True
+        self.wifi_mode = "off"
+        self.lock_checks = []
+
+    @property
+    def stats(self):
+        self.lock_checks.append(qtetherd._TETHER_LOCK.locked())
+        return self._stats
+
+    def connect(self, serial):
+        self.lock_checks.append(qtetherd._TETHER_LOCK.locked())
+        return True
+
+    def disconnect(self):
+        self.lock_checks.append(qtetherd._TETHER_LOCK.locked())
+
+
 def stats(**kw):
     base = dict(
         state=TetherState.CONNECTED,
@@ -37,7 +62,11 @@ def stats(**kw):
         tx_rate_bps=500.0,
         reconnect_count=2,
         battery_level="81",
+        battery_status="discharging",
         battery_temp_c=37.5,
+        device_serial="1WMHH0000",
+        device_model="Quest 3",
+        vpn_ip="10.0.0.2",
         last_error="",
     )
     base.update(kw)
@@ -62,6 +91,10 @@ class Status(unittest.TestCase):
                 "reconnects": 2,
                 "temp_c": 37.5,
                 "zone": "green",
+                "device_serial": "1WMHH0000",
+                "device_model": "Quest 3",
+                "vpn_ip": "10.0.0.2",
+                "battery_status": "discharging",
                 "error": "",
             },
         )
@@ -121,6 +154,19 @@ class Commands(unittest.TestCase):
         self.assertEqual(t.calls, [("disconnect",)])
 
 
+class Locking(unittest.TestCase):
+    def test_every_tether_call_happens_under_the_shared_lock(self):
+        for req in (
+            {"cmd": "status"},
+            {"cmd": "connect"},
+            {"cmd": "disconnect"},
+        ):
+            t = LockProbeTether(stats())
+            qtetherd.handle_request(t, SERIAL, req)
+            self.assertTrue(t.lock_checks, req)
+            self.assertTrue(all(t.lock_checks), req)
+
+
 class WifiSync(unittest.TestCase):
     def test_without_a_headset_net_sync_is_not_called(self):
         with patch("qtetherd.net_sync.sync_quest_wifi") as sync:
@@ -153,6 +199,44 @@ class WifiSync(unittest.TestCase):
             )
 
 
+class WifiSecret(unittest.TestCase):
+    def test_key_goes_to_adb_but_never_into_a_reply_or_log(self):
+        secret = "S3cretPassphrase!"
+        logs = []
+        ssids = iter(["OtherNetwork"] + ["HomeNetwork"] * 10)
+
+        class Adb:
+            def __init__(self):
+                self.calls = []
+
+            def run_adb(self, *args, **kwargs):
+                self.calls.append(args)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        t = FakeTether(stats())
+        t.adb = Adb()
+        with (
+            patch("qtetherd.net_sync.get_pc_ssid", return_value="HomeNetwork"),
+            patch(
+                "qtetherd.net_sync.get_pc_wifi",
+                return_value=("HomeNetwork", secret, "wpa2"),
+            ),
+            patch(
+                "qtetherd.net_sync.get_quest_ssid",
+                side_effect=lambda *a: next(ssids),
+            ),
+            patch("qtetherd.net_sync.time.sleep"),
+            patch("qtetherd.log.info", side_effect=logs.append),
+        ):
+            answer = qtetherd.handle_request(t, SERIAL, {"cmd": "wifi-sync"})
+
+        self.assertEqual(answer, {"ok": True, "result": "switched"})
+        self.assertTrue(any(secret in str(call) for call in t.adb.calls))
+        self.assertNotIn(secret, json.dumps(answer))
+        self.assertFalse(any(secret in line for line in logs))
+        self.assertIn("HomeNetwork", "\n".join(logs))
+
+
 class Logs(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -172,19 +256,64 @@ class Logs(unittest.TestCase):
             answer, {"ok": True, "source": "app", "lines": ["two", "three"]}
         )
 
-    def test_relay_log_by_source_and_line_alias(self):
+    def test_relay_log_by_source(self):
         answer = qtetherd.handle_request(
-            self.tether, SERIAL, {"cmd": "logs", "source": "relay.log", "lines": 1}
+            self.tether, SERIAL, {"cmd": "logs", "source": "relay.log", "n": 1}
         )
         self.assertEqual(
             answer, {"ok": True, "source": "relay", "lines": ["relay two"]}
         )
+
+    def test_only_source_and_n_are_read(self):
+        answer = qtetherd.handle_request(
+            self.tether,
+            SERIAL,
+            {
+                "cmd": "logs",
+                "source": "relay",
+                "lines": 1,
+                "count": 1,
+                "file": "quest-tether.log",
+                "which": "app",
+                "log": "app",
+            },
+        )
+        self.assertEqual(
+            answer,
+            {
+                "ok": True,
+                "source": "relay",
+                "lines": ["relay one", "relay two"],
+            },
+        )
+
+    def test_n_is_capped_at_one_thousand(self):
+        with open(
+            os.path.join(self.tmp.name, "quest-tether.log"), "w", encoding="utf-8"
+        ) as f:
+            f.writelines(f"line {i}\n" for i in range(1005))
+        answer = qtetherd.handle_request(
+            self.tether, SERIAL, {"cmd": "logs", "source": "app", "n": 5000}
+        )
+        self.assertEqual(len(answer["lines"]), 1000)
+        self.assertEqual(answer["lines"][0], "line 5")
+        self.assertEqual(answer["lines"][-1], "line 1004")
 
     def test_missing_log_is_an_empty_tail(self):
         answer = qtetherd.handle_request(
             self.tether, SERIAL, {"cmd": "logs", "source": "service"}
         )
         self.assertEqual(answer, {"ok": True, "source": "service", "lines": []})
+
+    def test_app_source_reads_only_its_one_file(self):
+        other = tempfile.TemporaryDirectory()
+        self.addCleanup(other.cleanup)
+        tether = FakeTether(stats())
+        tether._data_dir = other.name
+        with open(os.path.join(other.name, "qtetherd.log"), "w", encoding="utf-8") as f:
+            f.write("service only\n")
+        answer = qtetherd.handle_request(tether, SERIAL, {"cmd": "logs"})
+        self.assertEqual(answer, {"ok": True, "source": "app", "lines": []})
 
     def test_bad_count_and_unknown_source(self):
         self.assertEqual(
@@ -275,6 +404,32 @@ class Settings(unittest.TestCase):
         )
         self.assertTrue(t.auto_reconnect)
         self.assertEqual(t.wifi_mode, "off")
+
+    def test_boolean_settings_must_be_real_booleans(self):
+        for key in ("auto_reconnect", "crash_reports"):
+            for value in (1, 0, "true", None):
+                t = FakeTether(stats())
+                with patch("qtetherd.crash_report.set_enabled") as set_enabled:
+                    answer = qtetherd.handle_request(
+                        t, SERIAL, {"cmd": "settings-set", "settings": {key: value}}
+                    )
+                self.assertEqual(
+                    answer, {"ok": False, "error": "bad " + key}, (key, value)
+                )
+                self.assertTrue(t.auto_reconnect)
+                set_enabled.assert_not_called()
+
+    def test_boolean_alias_must_be_a_real_boolean(self):
+        t = FakeTether(stats())
+        self.assertEqual(
+            qtetherd.handle_request(
+                t,
+                SERIAL,
+                {"cmd": "settings-set", "key": "auto-reconnect", "value": "on"},
+            ),
+            {"ok": False, "error": "bad auto_reconnect"},
+        )
+        self.assertTrue(t.auto_reconnect)
 
 
 class OverLoopback(unittest.TestCase):

@@ -20,6 +20,7 @@ import os
 import socket
 import socketserver
 import sys
+import threading
 from typing import Any, Callable, Dict, List
 
 import crash_report
@@ -29,15 +30,22 @@ from tether_manager import TetherManager, temperature_zone
 
 HOST = "127.0.0.1"
 PORT = 31417
+HANDLER_TIMEOUT = 10
+MAX_LOG_LINES = 1000
 
 log = logging.getLogger(__name__)
 
+# One lock around every TetherManager call: the monitor callbacks and request
+# threads share the same manager.
+_TETHER_LOCK = threading.Lock()
+
 # The window's log and the service's own log share this folder with relay.log.
+# Each source maps to exactly one file.
 LOG_FILES = {
-    "app": ("quest-tether.log", "qtetherd.log", "app.log"),
-    "window": ("quest-tether.log",),
-    "service": ("qtetherd.log",),
-    "relay": ("relay.log",),
+    "app": "quest-tether.log",
+    "window": "quest-tether.log",
+    "service": "qtetherd.log",
+    "relay": "relay.log",
 }
 
 
@@ -59,21 +67,16 @@ def _tail(path: str, n: int) -> List[str]:
 
 
 def _logs(tether, req) -> dict:
-    raw_n = req.get("n", req.get("lines", req.get("count", 50)))
+    raw_n = req.get("n", 50)
     try:
         n = int(raw_n)
     except (TypeError, ValueError):
         return {"ok": False, "error": "bad line count"}
     if n < 0:
         return {"ok": False, "error": "bad line count"}
+    n = min(n, MAX_LOG_LINES)
 
-    raw_source = (
-        req.get("source")
-        or req.get("file")
-        or req.get("which")
-        or req.get("log")
-        or "app"
-    )
+    raw_source = req.get("source", "app")
     source = str(raw_source).lower()
     if source.endswith(".log"):
         source = source[:-4]
@@ -82,12 +85,9 @@ def _logs(tether, req) -> dict:
     if source not in LOG_FILES:
         return {"ok": False, "error": "unknown log: " + str(raw_source)}
 
-    folder = _data_dir(tether)
-    for name in LOG_FILES[source]:
-        path = os.path.join(folder, name)
-        if os.path.isfile(path):
-            return {"ok": True, "source": source, "lines": _tail(path, n)}
-    return {"ok": True, "source": source, "lines": []}
+    path = os.path.join(_data_dir(tether), LOG_FILES[source])
+    lines = _tail(path, n) if os.path.isfile(path) else []
+    return {"ok": True, "source": source, "lines": lines}
 
 
 def _settings(tether) -> Dict[str, Any]:
@@ -116,14 +116,14 @@ def _settings_set(tether, req) -> dict:
     clean: Dict[str, Any] = {}
     for key, value in updates.items():
         key = aliases.get(key, key)
-        if key == "auto_reconnect":
-            clean[key] = bool(value)
+        if key in ("auto_reconnect", "crash_reports"):
+            if not isinstance(value, bool):
+                return {"ok": False, "error": "bad " + key}
+            clean[key] = value
         elif key == "wifi_mode":
             if value not in ("off", "sync", "leave"):
                 return {"ok": False, "error": "bad wifi_mode: " + str(value)}
             clean[key] = value
-        elif key == "crash_reports":
-            clean[key] = bool(value)
         else:
             return {"ok": False, "error": "unknown setting: " + str(key)}
 
@@ -151,63 +151,96 @@ def _wifi_sync(tether, find_serial) -> dict:
     return answer
 
 
-def handle_request(tether, find_serial, req) -> dict:
+def handle_request(tether, find_serial, req, lock=None) -> dict:
     """Handle one request using the supplied tether and headset lookup."""
     if not isinstance(req, dict) or not isinstance(req.get("cmd"), str):
         return {"ok": False, "error": "bad request"}
 
-    cmd = req["cmd"]
-    if cmd == "status":
-        s = tether.stats
-        return {
-            "state": s.state.value,
-            "rx_bps": s.rx_rate_bps,
-            "tx_bps": s.tx_rate_bps,
-            "uptime_s": s.uptime_seconds,
-            "battery_level": s.battery_level,
-            "reconnects": s.reconnect_count,
-            "temp_c": s.battery_temp_c,
-            "zone": temperature_zone(s.battery_temp_c),
-            "error": s.last_error,
-        }
-    if cmd == "connect":
-        serial = find_serial()
-        if serial is None:
-            return {"ok": False, "error": "no headset found"}
-        if tether.connect(serial):
+    with lock or _TETHER_LOCK:
+        cmd = req["cmd"]
+        if cmd == "status":
+            s = tether.stats
+            return {
+                "state": s.state.value,
+                "rx_bps": s.rx_rate_bps,
+                "tx_bps": s.tx_rate_bps,
+                "uptime_s": s.uptime_seconds,
+                "battery_level": s.battery_level,
+                "reconnects": s.reconnect_count,
+                "temp_c": s.battery_temp_c,
+                "zone": temperature_zone(s.battery_temp_c),
+                "device_serial": s.device_serial,
+                "device_model": s.device_model,
+                "vpn_ip": s.vpn_ip,
+                "battery_status": s.battery_status,
+                "error": s.last_error,
+            }
+        if cmd == "connect":
+            serial = find_serial()
+            if serial is None:
+                return {"ok": False, "error": "no headset found"}
+            if tether.connect(serial):
+                return {"ok": True}
+            return {"ok": False, "error": tether.stats.last_error or "connect failed"}
+        if cmd == "disconnect":
+            tether.disconnect()
             return {"ok": True}
-        return {"ok": False, "error": tether.stats.last_error or "connect failed"}
-    if cmd == "disconnect":
-        tether.disconnect()
-        return {"ok": True}
-    if cmd == "wifi-sync":
-        return _wifi_sync(tether, find_serial)
-    if cmd == "logs":
-        return _logs(tether, req)
-    if cmd == "settings-get":
-        return {"ok": True, "settings": _settings(tether)}
-    if cmd == "settings-set":
-        return _settings_set(tether, req)
-    return {"ok": False, "error": "unknown command: " + cmd}
+        if cmd == "wifi-sync":
+            return _wifi_sync(tether, find_serial)
+        if cmd == "logs":
+            return _logs(tether, req)
+        if cmd == "settings-get":
+            return {"ok": True, "settings": _settings(tether)}
+        if cmd == "settings-set":
+            return _settings_set(tether, req)
+        return {"ok": False, "error": "unknown command: " + cmd}
 
 
-def make_server(handler: Callable[[Any], dict], host: str = HOST, port: int = PORT) -> socketserver.ThreadingTCPServer:
+def _monitor_callbacks(tether):
+    """Connect/disconnect callbacks for USB monitoring when auto-reconnect is on."""
+
+    def on_connected(device_info):
+        if not isinstance(device_info, dict):
+            return
+        with _TETHER_LOCK:
+            serial = device_info.get("serial")
+            if not tether.auto_reconnect or not serial:
+                return
+            if device_info.get("status", "device") != "device":
+                return
+            tether.connect(serial)
+
+    def on_disconnected():
+        with _TETHER_LOCK:
+            if tether.auto_reconnect:
+                tether.disconnect()
+
+    return on_connected, on_disconnected
+
+
+def make_server(
+    handler: Callable[[Any], dict], host: str = HOST, port: int = PORT
+) -> socketserver.ThreadingTCPServer:
     """Bind a loopback JSON-lines server; the caller runs serve_forever()."""
     if host != HOST:
         raise ValueError("qtetherd binds to 127.0.0.1 only")
 
     class Handler(socketserver.StreamRequestHandler):
         def handle(self) -> None:
+            self.connection.settimeout(HANDLER_TIMEOUT)
             line = self.rfile.readline(65536)
             try:
                 parsed = json.loads(line)
             except ValueError:
                 answer = {"ok": False, "error": "bad request"}
             else:
-                try:
-                    answer = handler(parsed)
-                except Exception:
-                    answer = {"ok": False, "error": "internal error"}
+                if not isinstance(parsed, dict):
+                    answer = {"ok": False, "error": "bad request"}
+                else:
+                    try:
+                        answer = handler(parsed)
+                    except Exception:
+                        answer = {"ok": False, "error": "internal error"}
             self.wfile.write((json.dumps(answer) + "\n").encode("utf-8"))
 
     class Server(socketserver.ThreadingTCPServer):
@@ -234,6 +267,9 @@ def serve(host: str = HOST, port: int = PORT) -> None:
 
     adb = ADBManager()
     tether = TetherManager(adb)
+    if tether.auto_reconnect:
+        on_connected, on_disconnected = _monitor_callbacks(tether)
+        adb.start_monitoring(on_connected=on_connected, on_disconnected=on_disconnected)
     try:
         server = make_server(
             lambda req: handle_request(tether, adb.find_serial, req), host, port
@@ -244,7 +280,9 @@ def serve(host: str = HOST, port: int = PORT) -> None:
     server.serve_forever()
 
 
-def request(cmd: dict, host: str = HOST, port: int = PORT, timeout: float = 5.0) -> dict:
+def request(
+    cmd: dict, host: str = HOST, port: int = PORT, timeout: float = 5.0
+) -> dict:
     """Send one request to a running service and return its answer (client side)."""
     with socket.create_connection((host, port), timeout=timeout) as conn:
         conn.sendall((json.dumps(cmd) + "\n").encode("utf-8"))

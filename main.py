@@ -438,6 +438,35 @@ class QuestTetherApp(ctk.CTk):
                 self.after(0, lambda: self._log_panel.append(message))
             return None
 
+    def _fall_back_to_process(self):
+        """Take the core over in this window after qtetherd stops answering."""
+        self._service_mode = False
+        if self.tether is not None:
+            return
+        self.adb = ADBManager()
+        self.tether = TetherManager(self.adb)
+        self.tether.set_callbacks(
+            on_state_change=self._on_state_change,
+            on_stats_update=self._on_stats_update,
+            on_log=self._on_log,
+        )
+        self.adb.start_monitoring(
+            on_connected=self._on_device_connected,
+            on_disconnected=self._on_device_disconnected,
+        )
+        self._log_panel.append("qtetherd stopped; running in-process")
+
+    def _reprobe_service(self) -> bool:
+        """True while qtetherd still answers, else fall back to the core here."""
+        if not self._service_mode:
+            return False
+        status = self._probe_service()
+        if status:
+            self._apply_service_status(status)
+            return True
+        self._fall_back_to_process()
+        return False
+
     def _apply_service_status(self, status: dict):
         """Show a service status reply through the same callbacks as the core."""
         if not status:
@@ -450,6 +479,8 @@ class QuestTetherApp(ctk.CTk):
     def _push_setting(self, key: str, value):
         """Persist a setting through qtetherd when the service owns the core."""
         if not self._service_mode:
+            return False
+        if not self._reprobe_service():
             return False
 
         def send():
@@ -466,15 +497,17 @@ class QuestTetherApp(ctk.CTk):
     def _run_service_command(self, cmd: dict, timeout: float = 90.0):
         """Run connect/disconnect in the service, then show the fresh status."""
         answer = self._service_request(cmd, timeout=timeout)
-        if answer is None:
+        try:
+            if answer is None:
+                return
+            if not answer.get("ok", False):
+                message = answer.get("error") or "request failed"
+                self.after(0, lambda: self._log_panel.append(message))
+            self._apply_service_status(
+                self._service_request({"cmd": "status"}, timeout=3.0, quiet=True)
+            )
+        finally:
             self.after(0, lambda: self._connect_btn.configure(state="normal"))
-            return
-        if not answer.get("ok", False):
-            message = answer.get("error") or "request failed"
-            self.after(0, lambda: self._log_panel.append(message))
-        self._apply_service_status(
-            self._service_request({"cmd": "status"}, timeout=3.0, quiet=True)
-        )
 
     def _build_ui(self):
         """Construct the main interface."""
@@ -823,7 +856,7 @@ class QuestTetherApp(ctk.CTk):
     def _do_connect(self):
         if self._quitting:
             return
-        if self._service_mode:
+        if self._service_mode and self._reprobe_service():
             self._run_service_command({"cmd": "connect"})
             return
         quest = self.adb.find_quest()
@@ -845,7 +878,7 @@ class QuestTetherApp(ctk.CTk):
         self.tether.connect(quest["serial"])
 
     def _do_disconnect(self):
-        if self._service_mode:
+        if self._service_mode and self._reprobe_service():
             self._run_service_command({"cmd": "disconnect"})
             return
         self.tether.disconnect()
