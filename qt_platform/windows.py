@@ -1,11 +1,12 @@
 """Windows implementation of the platform layer (docs/code-map.md, "The platform layer").
 
 Moved, not rewritten: each method's first line names the function it was copied from.
-The originals stay in tether_manager.py, adb_manager.py, net_sync.py and main.py until
-their callers are switched (#15). Only the signatures changed: parameters instead of
-module globals, return values instead of side effects. The `os.name != "nt"` guards are
-gone because this class only exists on Windows.
+Callers in tether_manager.py, adb_manager.py, net_sync.py and main.py use this through
+qt_platform.current() (#15). Only the signatures changed: parameters instead of module
+globals, return values instead of side effects. The `os.name != "nt"` guards are gone
+because this class only exists on Windows.
 """
+
 import logging
 import os
 import re
@@ -31,8 +32,13 @@ AUTOSTART_VALUE = "QuestTether"
 def _netsh(*args, timeout=8) -> str:
     # from net_sync._netsh
     try:
-        r = subprocess.run(["netsh", "wlan", *args], capture_output=True, text=True,
-                           timeout=timeout, creationflags=CREATE_NO_WINDOW)
+        r = subprocess.run(
+            ["netsh", "wlan", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            creationflags=CREATE_NO_WINDOW,
+        )
         return r.stdout if r.returncode == 0 else ""
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return ""
@@ -53,7 +59,7 @@ def _get_pc_ssid() -> Optional[str]:
 
 
 def _get_pc_credentials(ssid: str):
-    # from net_sync._get_pc_credentials (returns (security, passphrase); pc_wifi drops security)
+    # from net_sync._get_pc_credentials (returns (security, passphrase))
     out = _netsh("show", "profile", f"name={ssid}", "key=clear")
     if not out:
         return None
@@ -76,7 +82,9 @@ def _autostart_command() -> str:
     if getattr(sys, "frozen", False):
         exe = f'"{sys.executable}"'
     else:
-        main_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py")
+        main_py = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"
+        )
         exe = f'"{sys.executable}" "{main_py}"'
     return f"{exe} --minimized"
 
@@ -89,7 +97,9 @@ class WindowsPlatform(Platform):
 
     def data_dir(self) -> str:
         # from tether_manager.TetherManager.LOG_DIR (created here, as the interface promises)
-        path = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "QuestTether")
+        path = os.path.join(
+            os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "QuestTether"
+        )
         os.makedirs(path, exist_ok=True)
         return path
 
@@ -102,7 +112,9 @@ class WindowsPlatform(Platform):
         try:
             result = subprocess.run(
                 ["where", name],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
                 creationflags=CREATE_NO_WINDOW,
             )
             if result.returncode == 0:
@@ -120,7 +132,9 @@ class WindowsPlatform(Platform):
         try:
             result = subprocess.run(
                 ["where", "java"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
                 creationflags=CREATE_NO_WINDOW,
             )
             if result.returncode == 0:
@@ -131,16 +145,32 @@ class WindowsPlatform(Platform):
 
     def relay_command(self, tools_dir: str, serial: str) -> List[str]:
         # from tether_manager.TetherManager._spawn_relay: cmd = [java, "-jar", gnirehtet.jar, "run", serial]
-        return [self._find_java(), "-jar", os.path.join(tools_dir, "gnirehtet.jar"), "run", serial]
+        return [
+            self._find_java(),
+            "-jar",
+            os.path.join(tools_dir, "gnirehtet.jar"),
+            "run",
+            serial,
+        ]
+
+    def relay_candidates(self) -> List[Tuple[str, bool]]:
+        return [("gnirehtet.jar", True)]
 
     @staticmethod
     def _is_gnirehtet_pid(pid: int) -> bool:
         # from tether_manager.TetherManager._is_gnirehtet_pid
         try:
             r = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
-                capture_output=True, text=True, timeout=10, creationflags=CREATE_NO_WINDOW,
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=CREATE_NO_WINDOW,
             )
             if r.returncode != 0 or not r.stdout.strip():
                 return True
@@ -151,45 +181,63 @@ class WindowsPlatform(Platform):
     def stale_relay_pids(self, port: int) -> List[int]:
         # from tether_manager.TetherManager._kill_stale_process (the netstat scan; the kill is kill())
         pids: List[int] = []
-        try:
-            result = subprocess.run(
-                ["netstat", "-ano"],
-                capture_output=True, text=True, timeout=5,
-                creationflags=CREATE_NO_WINDOW,
-            )
-            for line in result.stdout.split("\n"):
-                if str(port) in line and "LISTENING" in line:
-                    parts = line.split()
-                    pid = int(parts[-1])
-                    if not self._is_gnirehtet_pid(pid):
-                        logger.info(f"Port {port} is held by PID {pid}, which is not gnirehtet — leaving it alone")
-                        continue
-                    pids.append(pid)
-        except Exception as e:
-            logger.warning(f"Warning: could not check for stale process: {e}")
+        result = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        for line in result.stdout.split("\n"):
+            if str(port) in line and "LISTENING" in line:
+                parts = line.split()
+                pid = int(parts[-1])
+                if not self._is_gnirehtet_pid(pid):
+                    logger.info(
+                        f"Port {port} is held by PID {pid}, which is not gnirehtet — leaving it alone"
+                    )
+                    continue
+                pids.append(pid)
         return pids
 
     def kill(self, pid: int) -> None:
         # from tether_manager.TetherManager._kill_stale_process (taskkill, then its 0.5 s wait)
-        subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                       capture_output=True, timeout=5,
-                       creationflags=CREATE_NO_WINDOW)
+        subprocess.run(
+            ["taskkill", "/F", "/PID", str(pid)],
+            capture_output=True,
+            timeout=5,
+            creationflags=CREATE_NO_WINDOW,
+        )
         time.sleep(0.5)
 
-    def pc_wifi(self) -> Optional[Tuple[str, str]]:
+    def kill_tree(self, pid: int) -> None:
+        # from tether_manager.TetherManager.force_kill (taskkill with /T)
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            timeout=5,
+            creationflags=CREATE_NO_WINDOW,
+        )
+
+    def pc_ssid(self) -> Optional[str]:
+        # from net_sync.get_pc_ssid (minus the os.name guard); reads no key
+        return _get_pc_ssid()
+
+    def pc_wifi(self) -> Optional[Tuple[str, str, str]]:
         # from net_sync.get_pc_ssid + net_sync._get_pc_credentials
-        ssid = _get_pc_ssid()
+        ssid = self.pc_ssid()
         if ssid is None:
             return None
         creds = _get_pc_credentials(ssid)
         if creds is None:
             return None
-        return ssid, creds[1]
+        return ssid, creds[1], creds[0]
 
     def single_instance(self, name: str) -> bool:
         # from main._acquire_single_instance (mutex "Local\" + name; window title "Quest Tether")
         global _instance_mutex
         import ctypes
+
         kernel32 = ctypes.windll.kernel32
         kernel32.CreateMutexW.restype = ctypes.c_void_p
         handle = kernel32.CreateMutexW(None, False, "Local\\" + name)
@@ -211,7 +259,9 @@ class WindowsPlatform(Platform):
     def autostart(self) -> bool:
         # new for M6: present HKCU Run value "QuestTether" means on
         try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ) as key:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ
+            ) as key:
                 winreg.QueryValueEx(key, AUTOSTART_VALUE)
             return True
         except OSError:
@@ -220,11 +270,17 @@ class WindowsPlatform(Platform):
     def set_autostart(self, on: bool) -> bool:
         # new for M6: writes or deletes the HKCU Run value "QuestTether"
         if on:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
-                winreg.SetValueEx(key, AUTOSTART_VALUE, 0, winreg.REG_SZ, _autostart_command())
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE
+            ) as key:
+                winreg.SetValueEx(
+                    key, AUTOSTART_VALUE, 0, winreg.REG_SZ, _autostart_command()
+                )
         else:
             try:
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+                with winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE
+                ) as key:
                     winreg.DeleteValue(key, AUTOSTART_VALUE)
             except FileNotFoundError:
                 pass

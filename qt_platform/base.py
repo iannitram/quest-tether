@@ -1,4 +1,5 @@
 """The interface every platform module implements (docs/code-map.md, "The platform layer")."""
+
 from typing import List, Optional, Sequence, Tuple
 
 
@@ -23,6 +24,10 @@ class Platform:
         """The command that runs `gnirehtet run <serial>` with this OS's relay."""
         raise NotImplementedError
 
+    def relay_candidates(self) -> List[Tuple[str, bool]]:
+        """Accepted relay filenames in preference order, each with whether it needs Java."""
+        raise NotImplementedError
+
     def stale_relay_pids(self, port: int) -> List[int]:
         """PIDs of gnirehtet processes listening on port (never another program's)."""
         raise NotImplementedError
@@ -31,8 +36,22 @@ class Platform:
         """Force-stop one process."""
         raise NotImplementedError
 
-    def pc_wifi(self) -> Optional[Tuple[str, str]]:
-        """(SSID, key) of the PC's current Wi-Fi network, or None if not on Wi-Fi or unreadable."""
+    def kill_tree(self, pid: int) -> None:
+        """Force-stop a process and its children."""
+        raise NotImplementedError
+
+    def pc_ssid(self) -> Optional[str]:
+        """SSID of the PC's current Wi-Fi network, or None if not on Wi-Fi.
+
+        Must not read the saved key: callers only fetch credentials when switching.
+        """
+        raise NotImplementedError
+
+    def pc_wifi(self) -> Optional[Tuple[str, str, str]]:
+        """(SSID, key, security) of the PC's current Wi-Fi network, or None if not on Wi-Fi or unreadable.
+
+        security is the headset's `cmd wifi connect-network` keyword: wpa2 or wpa3.
+        """
         raise NotImplementedError
 
     def single_instance(self, name: str) -> bool:

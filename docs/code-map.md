@@ -7,12 +7,12 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | Path | Owns | State | Musts |
 |---|---|---|---|
 | `adb_manager.py` | `ADBManager`: find adb, list devices, find the Quest, device details, start/stop the gnirehtet client on the headset, VPN up/down, `tun0` stats, Wi-Fi toggle, USB monitor loop. | present (Windows paths inside) | M1, M2, M5 |
-| `tether_manager.py` | `TetherManager` + `TetherState` + `TetherStats`: the relay process (`gnirehtet run`), connect/disconnect, health monitor and heal, auto-reconnect, stats, the headset Wi-Fi policy. The tether core. | present (Windows calls inside: `netstat`, `taskkill`, PowerShell, `CREATE_NO_WINDOW`, `%LOCALAPPDATA%`) | M1-M5 |
+| `tether_manager.py` | `TetherManager` + `TetherState` + `TetherStats`: the relay process (`gnirehtet run`), connect/disconnect, health monitor and heal, auto-reconnect, stats, the headset Wi-Fi policy. The tether core. | present (OS calls go through `qt_platform.current()`) | M1-M5 |
 | `heal.py` | **New.** `Healer`: the pure heal ladder and flap breaker lifted out of the health loop. `now` is passed in, nothing sleeps, and every reading returns `None`, `RestartClient`, `RestartAdbThenClient`, `FullReconnect` or `GiveUp`. | present | M2 |
 | `relay_log.py` | Pure parser: relay "Client #N connected/disconnected" lines and the connected-client set (#62). | new | M1 |
-| `net_sync.py` | Copy the PC's Wi-Fi network to the headset: PC SSID and key from `netsh wlan`, then `cmd wifi` on the headset. | present (Windows only) | M5, M7 |
-| `main.py` | The desktop window (CustomTkinter), dashboard, log panel, tray (pystray + Pillow), single-instance guard (Windows named mutex), `--minimized`. | present | M4, M6 |
-| `qt_platform/` | **New.** The platform layer: everything that differs by OS behind one interface (`base.py`: the `Platform` class, every method raises `NotImplementedError`), with `windows.py` (`WindowsPlatform`) and `linux.py` (`LinuxPlatform`; all nine methods filled in, #33 and #34); `current()` in `__init__.py` picks one (done: Windows, Linux, else `RuntimeError`). Nothing calls it yet. | interface and `current()` present; Linux filled | M6, M7 |
+| `net_sync.py` | Copy the PC's Wi-Fi network to the headset: PC SSID, key and security from the platform layer, then `cmd wifi` on the headset. | present (platform-backed) | M5, M7 |
+| `main.py` | The desktop window (CustomTkinter), dashboard, log panel, tray (pystray + Pillow), single-instance guard (through the platform layer), `--minimized`. | present | M4, M6 |
+| `qt_platform/` | **New.** The platform layer: everything that differs by OS behind one interface (`base.py`: the `Platform` class), with `windows.py` (`WindowsPlatform`) and `linux.py` (`LinuxPlatform`); `current()` in `__init__.py` picks one (Windows, Linux, else `RuntimeError`). Callers in `adb_manager.py`, `tether_manager.py`, `net_sync.py` and `main.py` use it. | present on both OSes | M6, M7 |
 | `qtetherd.py` | **New.** Linux user service that owns the one tether (core in-process) and answers JSON requests on `127.0.0.1:31417` (status, connect, disconnect; the relay's own port is 31416). Clients: the desktop window on Linux, the Decky plugin. | stub | M7, M8 |
 | `decky/` | **New.** The Decky Loader plugin: `plugin.json`, a Python backend (`main.py`) that is a client of `qtetherd`, and the Quick Access panel (`src/index.tsx`) with the `decky-plugin-template` build config (`package.json`, `rollup.config.js`, `tsconfig.json`). | panel built; backend stub | M8 |
 | `build.spec`, `build.bat` | PyInstaller one-file EXE (Windows). Linux packaging joins it (#10 and the Linux package issue). | present | M9 |
@@ -29,8 +29,8 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `tool_path(name, base_dirs)` | `adb.exe` in `tools/` next to the EXE, else `where` | `adb` in `tools/` next to the binary, else `which` |
 | `no_window_flags()` | `subprocess.CREATE_NO_WINDOW` | `0` |
 | `relay_command(tools, serial)` | `java -jar gnirehtet.jar run <serial>` (Java relay, #9) | `gnirehtet run <serial>` (native relay; Java fallback if #9 says so) |
-| `stale_relay_pids(port)` / `kill(pid)` | `netstat -ano` + PowerShell command line + `taskkill` (today's code) | `ss -ltnp` (or `/proc/net/tcp` + `/proc/<pid>/cmdline`) + `os.kill` |
-| `pc_wifi()` -> `(ssid, key)` | `netsh wlan show interfaces` / `show profile key=clear` (today's `net_sync`) | `nmcli -t -f active,ssid dev wifi` / `nmcli -s -g 802-11-wireless-security.psk connection show <ssid>` |
+| `stale_relay_pids(port)` / `kill(pid)` / `kill_tree(pid)` | `netstat -ano` + PowerShell command line + `taskkill` (`kill_tree` adds `/T`) | `ss -ltnp` (or `/proc/net/tcp` + `/proc/<pid>/cmdline`) + `os.kill` |
+| `pc_wifi()` -> `(ssid, key, security)` | `netsh wlan show interfaces` / `show profile key=clear`; `security` is `wpa2` or `wpa3` | `nmcli` on the active Wi-Fi connection: `802-11-wireless.ssid`, `802-11-wireless-security.psk`, `802-11-wireless-security.key-mgmt` (`wpa-psk` -> `wpa2`, `sae` -> `wpa3`) |
 | `single_instance(name)` | named mutex `Local\QuestTetherSingleInstance` (today's code) | a lock file in `data_dir()` (`fcntl.flock`) |
 | `autostart()` / `set_autostart(on)` | `HKCU\...\Run` value with `--minimized` | `~/.config/autostart/quest-tether.desktop` with `--minimized` |
 
@@ -80,6 +80,6 @@ Where it stands (2026-10-28): Dev Loop, nothing past the skeleton built. Open is
 
 1. Clean the repo and package (#11, then #10); CI on Windows and Linux (CI done). Not started.
 2. Fix the honest Connected state (#1) and add battery temperature (#4). Not started.
-3. The platform layer: Windows implementation from today's code (#13), Linux implementation (#14), callers switched (#15). Skeleton only (`qt_platform/` stubs).
+3. The platform layer: Windows implementation from today's code (#13), Linux implementation (#14), callers switched (#15). Done: both implementations and every caller (`adb_manager.py`, `tether_manager.py`, `net_sync.py`, `main.py`).
 4. Linux relay and USB access (#16, #17); `qtetherd` (#18); the Decky plugin (#19, #20); the Linux package (#21). The #20 panel and its build config are in; the rest are stubs.
 5. Device checks on both OSes: reconnect (#2, with #6's answer), soak (#3), the questions (#7, #8, #9). Need the headset; not started.

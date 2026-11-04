@@ -1,4 +1,5 @@
 """Pure parsers for NetworkManager, socket and process command-line output."""
+
 import re
 from typing import List, Optional
 
@@ -30,6 +31,17 @@ def parse_psk(text: str) -> Optional[str]:
     """Return the first key line, preserving its leading and trailing spaces."""
     lines = text.splitlines()
     return (lines[0] or None) if lines else None
+
+
+def parse_security(text: str) -> Optional[str]:
+    """Map NetworkManager key-mgmt to the headset's `cmd wifi` keyword: wpa3 or wpa2."""
+    lines = text.splitlines()
+    key_mgmt = lines[0].strip().lower() if lines else ""
+    if key_mgmt == "sae":
+        return "wpa3"
+    if key_mgmt == "wpa-psk":
+        return "wpa2"
+    return None
 
 
 def parse_ss_pids(text: str, port: int) -> List[int]:
