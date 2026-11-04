@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import qtetherd  # noqa: E402
+from tether_manager import TetherManager, TetherState  # noqa: E402
 
 
 class Serve(unittest.TestCase):
@@ -49,9 +50,12 @@ class Serve(unittest.TestCase):
 
     def test_port_taken_prints_one_line_and_exits_one(self):
         err = io.StringIO()
+        adb = Mock()
+        tether = Mock()
+        tether.auto_reconnect = True
         with (
-            patch("qtetherd.ADBManager", return_value=Mock()),
-            patch("qtetherd.TetherManager", return_value=Mock()),
+            patch("qtetherd.ADBManager", return_value=adb),
+            patch("qtetherd.TetherManager", return_value=tether),
             patch("qtetherd.make_server", side_effect=OSError("in use")),
             redirect_stderr(err),
         ):
@@ -61,6 +65,7 @@ class Serve(unittest.TestCase):
         self.assertEqual(raised.exception.code, 1)
         message = err.getvalue().strip().splitlines()[-1]
         self.assertEqual(message, "qtetherd: port 31417 is already in use")
+        adb.start_monitoring.assert_not_called()
 
     def _serve(self, auto_reconnect):
         adb = Mock()
@@ -90,6 +95,18 @@ class Serve(unittest.TestCase):
         adb, _ = self._serve(False)
 
         adb.start_monitoring.assert_not_called()
+
+    def test_monitor_callback_starts_no_second_relay_while_connected(self):
+        tether = TetherManager(Mock(), gnirehtet_path="fake.jar")
+        tether._set_state(TetherState.CONNECTED)
+        tether._spawn_relay = Mock()
+        tether._kill_stale_process = Mock()
+        on_connected, _ = qtetherd._monitor_callbacks(tether)
+
+        on_connected({"serial": "HEADSET", "status": "device"})
+
+        tether._spawn_relay.assert_not_called()
+        tether._kill_stale_process.assert_not_called()
 
 
 if __name__ == "__main__":

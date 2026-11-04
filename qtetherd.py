@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List
 import crash_report
 import net_sync
 from adb_manager import ADBManager
-from tether_manager import TetherManager, temperature_zone
+from tether_manager import ACTIVE_CONNECT_STATES, TetherManager, temperature_zone
 
 HOST = "127.0.0.1"
 PORT = 31417
@@ -152,48 +152,58 @@ def _wifi_sync(tether, find_serial) -> dict:
 
 
 def handle_request(tether, find_serial, req, lock=None) -> dict:
-    """Handle one request using the supplied tether and headset lookup."""
+    """Handle one request using the supplied tether and headset lookup.
+
+    Only commands that drive the tether take the shared lock. Status, logs and
+    settings stay lock-free so a long connect cannot freeze the window's polls.
+    """
     if not isinstance(req, dict) or not isinstance(req.get("cmd"), str):
         return {"ok": False, "error": "bad request"}
 
-    with lock or _TETHER_LOCK:
-        cmd = req["cmd"]
-        if cmd == "status":
-            s = tether.stats
-            return {
-                "state": s.state.value,
-                "rx_bps": s.rx_rate_bps,
-                "tx_bps": s.tx_rate_bps,
-                "uptime_s": s.uptime_seconds,
-                "battery_level": s.battery_level,
-                "reconnects": s.reconnect_count,
-                "temp_c": s.battery_temp_c,
-                "zone": temperature_zone(s.battery_temp_c),
-                "device_serial": s.device_serial,
-                "device_model": s.device_model,
-                "vpn_ip": s.vpn_ip,
-                "battery_status": s.battery_status,
-                "error": s.last_error,
-            }
-        if cmd == "connect":
+    lock = lock or _TETHER_LOCK
+    cmd = req["cmd"]
+    if cmd == "status":
+        s = tether.stats
+        return {
+            "state": s.state.value,
+            "rx_bps": s.rx_rate_bps,
+            "tx_bps": s.tx_rate_bps,
+            "uptime_s": s.uptime_seconds,
+            "battery_level": s.battery_level,
+            "reconnects": s.reconnect_count,
+            "temp_c": s.battery_temp_c,
+            "zone": temperature_zone(s.battery_temp_c),
+            "device_serial": s.device_serial,
+            "device_model": s.device_model,
+            "vpn_ip": s.vpn_ip,
+            "battery_status": s.battery_status,
+            "error": s.last_error,
+        }
+    if cmd == "connect":
+        with lock:
+            state = tether.stats.state
+            if state in ACTIVE_CONNECT_STATES:
+                return {"ok": True, "already": state.value}
             serial = find_serial()
             if serial is None:
                 return {"ok": False, "error": "no headset found"}
             if tether.connect(serial):
                 return {"ok": True}
             return {"ok": False, "error": tether.stats.last_error or "connect failed"}
-        if cmd == "disconnect":
+    if cmd == "disconnect":
+        with lock:
             tether.disconnect()
-            return {"ok": True}
-        if cmd == "wifi-sync":
+        return {"ok": True}
+    if cmd == "wifi-sync":
+        with lock:
             return _wifi_sync(tether, find_serial)
-        if cmd == "logs":
-            return _logs(tether, req)
-        if cmd == "settings-get":
-            return {"ok": True, "settings": _settings(tether)}
-        if cmd == "settings-set":
-            return _settings_set(tether, req)
-        return {"ok": False, "error": "unknown command: " + cmd}
+    if cmd == "logs":
+        return _logs(tether, req)
+    if cmd == "settings-get":
+        return {"ok": True, "settings": _settings(tether)}
+    if cmd == "settings-set":
+        return _settings_set(tether, req)
+    return {"ok": False, "error": "unknown command: " + cmd}
 
 
 def _monitor_callbacks(tether):
@@ -267,9 +277,8 @@ def serve(host: str = HOST, port: int = PORT) -> None:
 
     adb = ADBManager()
     tether = TetherManager(adb)
-    if tether.auto_reconnect:
-        on_connected, on_disconnected = _monitor_callbacks(tether)
-        adb.start_monitoring(on_connected=on_connected, on_disconnected=on_disconnected)
+    # Bind before touching the headset: a second copy must exit without
+    # starting its own monitor and auto-connecting to the device.
     try:
         server = make_server(
             lambda req: handle_request(tether, adb.find_serial, req), host, port
@@ -277,6 +286,9 @@ def serve(host: str = HOST, port: int = PORT) -> None:
     except OSError:
         print(f"qtetherd: port {port} is already in use", file=sys.stderr)
         raise SystemExit(1)
+    if tether.auto_reconnect:
+        on_connected, on_disconnected = _monitor_callbacks(tether)
+        adb.start_monitoring(on_connected=on_connected, on_disconnected=on_disconnected)
     server.serve_forever()
 
 

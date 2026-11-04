@@ -369,6 +369,8 @@ class QuestTetherApp(ctk.CTk):
         self.tether = None
         self._service_mode = False
         self._last_status = {}
+        self._service_refused = False
+        self._status_in_flight = False
         if qt_platform.current().uses_tether_service():
             self._last_status = self._probe_service()
             self._service_mode = bool(self._last_status)
@@ -419,9 +421,17 @@ class QuestTetherApp(ctk.CTk):
         self.bind("<Unmap>", self._on_minimize)
 
     def _probe_service(self):
-        """The service's status reply, or None when qtetherd is not running."""
+        """The service's status reply, or None when qtetherd did not answer.
+
+        `_service_refused` says whether the port was actively refused (no
+        service) or merely slow/busy; only a refusal justifies falling back.
+        """
+        self._service_refused = False
         try:
             reply = qtetherd.request({"cmd": "status"}, timeout=1.0)
+        except ConnectionRefusedError:
+            self._service_refused = True
+            return None
         except (OSError, ValueError):
             return None
         if isinstance(reply, dict) and isinstance(reply.get("state"), str):
@@ -464,6 +474,10 @@ class QuestTetherApp(ctk.CTk):
         if status:
             self._apply_service_status(status)
             return True
+        if not getattr(self, "_service_refused", False):
+            # The service is still there, just busy (for example mid-connect).
+            # Keep using it; only a refused connection means it is gone.
+            return True
         self._fall_back_to_process()
         return False
 
@@ -480,10 +494,10 @@ class QuestTetherApp(ctk.CTk):
         """Persist a setting through qtetherd when the service owns the core."""
         if not self._service_mode:
             return False
-        if not self._reprobe_service():
-            return False
 
         def send():
+            if not self._reprobe_service():
+                return
             answer = self._service_request(
                 {"cmd": "settings-set", "settings": {key: value}}, timeout=5.0
             )
@@ -915,22 +929,37 @@ class QuestTetherApp(ctk.CTk):
                 daemon=True,
             ).start()
 
+    def _fetch_service_status(self):
+        """Worker-thread status poll; the answer is shown on the Tk thread."""
+        reply = self._service_request({"cmd": "status"}, timeout=1.0, quiet=True)
+        self.after(0, lambda: self._show_service_status(reply))
+
+    def _show_service_status(self, reply):
+        """Apply a status poll result on the Tk thread."""
+        self._status_in_flight = False
+        if self._quitting:
+            return
+        if reply:
+            self._adb_status.configure(
+                text="Service: OK", text_color=COLORS["accent_green"]
+            )
+            self._apply_service_status(reply)
+        else:
+            self._adb_status.configure(
+                text="Service: Down", text_color=COLORS["error"]
+            )
+
     def _ui_refresh_loop(self):
         """1-second UI refresh."""
         if self._quitting:
             return
 
         if self._service_mode:
-            reply = self._service_request({"cmd": "status"}, timeout=1.0, quiet=True)
-            if reply:
-                self._adb_status.configure(
-                    text="Service: OK", text_color=COLORS["accent_green"]
-                )
-                self._apply_service_status(reply)
-            else:
-                self._adb_status.configure(
-                    text="Service: Down", text_color=COLORS["error"]
-                )
+            # Never block the Tk thread on the socket: poll from a worker and
+            # post the result back with after().
+            if not self._status_in_flight:
+                self._status_in_flight = True
+                threading.Thread(target=self._fetch_service_status, daemon=True).start()
             if HAS_TRAY:
                 self._update_tray()
             self._ui_refresh_id = self.after(1000, self._ui_refresh_loop)

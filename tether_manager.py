@@ -31,6 +31,12 @@ class TetherState(Enum):
     ERROR = "error"
 
 
+# States in which a connect request must not start another relay. Both the
+# service handler and the USB monitor call TetherManager.connect(), so the
+# guard lives here to cover both paths.
+ACTIVE_CONNECT_STATES = (TetherState.STARTING, TetherState.CONNECTED)
+
+
 def _state_for_tunnel(tun0_present: bool) -> TetherState:
     """Return the user-visible state supported by the current tunnel check."""
     return TetherState.CONNECTED if tun0_present else TetherState.STARTING
@@ -305,6 +311,10 @@ class TetherManager:
 
     def connect(self, serial: str) -> bool:
         """Start gnirehtet run — handles relay, tunnel, and client in one process."""
+        if self.stats.state in ACTIVE_CONNECT_STATES:
+            self._log(f"Already {self.stats.state.value} — not starting another relay")
+            return True
+
         self._running = True
         self._reconnect_attempts = 0
         self.stats.device_serial = serial

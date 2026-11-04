@@ -118,14 +118,14 @@ class Status(unittest.TestCase):
 
 class Commands(unittest.TestCase):
     def test_connect_uses_the_found_serial(self):
-        t = FakeTether(stats())
+        t = FakeTether(stats(state=TetherState.IDLE))
         self.assertEqual(
             qtetherd.handle_request(t, SERIAL, {"cmd": "connect"}), {"ok": True}
         )
         self.assertEqual(t.calls, [("connect", "1WMHH0000")])
 
     def test_connect_without_headset_does_not_call_the_tether(self):
-        t = FakeTether(stats())
+        t = FakeTether(stats(state=TetherState.IDLE))
         self.assertEqual(
             qtetherd.handle_request(t, NONE, {"cmd": "connect"}),
             {"ok": False, "error": "no headset found"},
@@ -133,14 +133,16 @@ class Commands(unittest.TestCase):
         self.assertEqual(t.calls, [])
 
     def test_connect_failure_reports_the_tether_error(self):
-        t = FakeTether(stats(last_error="no relay"), connect_ok=False)
+        t = FakeTether(
+            stats(state=TetherState.IDLE, last_error="no relay"), connect_ok=False
+        )
         self.assertEqual(
             qtetherd.handle_request(t, SERIAL, {"cmd": "connect"}),
             {"ok": False, "error": "no relay"},
         )
 
     def test_connect_failure_without_error_text(self):
-        t = FakeTether(stats(), connect_ok=False)
+        t = FakeTether(stats(state=TetherState.IDLE), connect_ok=False)
         self.assertEqual(
             qtetherd.handle_request(t, SERIAL, {"cmd": "connect"}),
             {"ok": False, "error": "connect failed"},
@@ -153,18 +155,86 @@ class Commands(unittest.TestCase):
         )
         self.assertEqual(t.calls, [("disconnect",)])
 
+    def test_connect_while_connected_returns_already_and_starts_nothing(self):
+        t = FakeTether(stats(state=TetherState.CONNECTED))
+        self.assertEqual(
+            qtetherd.handle_request(t, SERIAL, {"cmd": "connect"}),
+            {"ok": True, "already": "connected"},
+        )
+        self.assertEqual(t.calls, [])
+
+    def test_connect_while_starting_returns_already_and_starts_nothing(self):
+        t = FakeTether(stats(state=TetherState.STARTING))
+        self.assertEqual(
+            qtetherd.handle_request(t, SERIAL, {"cmd": "connect"}),
+            {"ok": True, "already": "starting"},
+        )
+        self.assertEqual(t.calls, [])
+
 
 class Locking(unittest.TestCase):
-    def test_every_tether_call_happens_under_the_shared_lock(self):
-        for req in (
-            {"cmd": "status"},
-            {"cmd": "connect"},
-            {"cmd": "disconnect"},
+    def test_only_connect_and_disconnect_take_the_shared_lock(self):
+        for req, expected in (
+            ({"cmd": "status"}, False),
+            ({"cmd": "connect"}, True),
+            ({"cmd": "disconnect"}, True),
         ):
-            t = LockProbeTether(stats())
+            t = LockProbeTether(stats(state=TetherState.IDLE))
             qtetherd.handle_request(t, SERIAL, req)
             self.assertTrue(t.lock_checks, req)
-            self.assertTrue(all(t.lock_checks), req)
+            self.assertEqual(all(t.lock_checks), expected, req)
+
+    def test_status_returns_while_a_slow_connect_holds_the_lock(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        class SlowConnect:
+            def __init__(self):
+                self.stats = stats(state=TetherState.IDLE)
+                self.adb = object()
+                self.auto_reconnect = True
+                self.wifi_mode = "off"
+
+            def connect(self, serial):
+                started.set()
+                release.wait(5)
+                return True
+
+        tether = SlowConnect()
+        connecting = threading.Thread(
+            target=qtetherd.handle_request,
+            args=(tether, SERIAL, {"cmd": "connect"}),
+        )
+        connecting.start()
+        self.assertTrue(started.wait(2), "connect never started")
+        try:
+            answer = {}
+            reader = threading.Thread(
+                target=lambda: answer.update(
+                    qtetherd.handle_request(tether, SERIAL, {"cmd": "status"})
+                )
+            )
+            reader.start()
+            reader.join(2)
+            self.assertFalse(reader.is_alive(), "status waited for the connect lock")
+            self.assertEqual(answer["state"], "idle")
+        finally:
+            release.set()
+            connecting.join(5)
+
+    def test_wifi_sync_takes_the_shared_lock(self):
+        seen = []
+
+        def sync(*args, **kwargs):
+            seen.append(qtetherd._TETHER_LOCK.locked())
+            return "same"
+
+        with patch("qtetherd.net_sync.sync_quest_wifi", side_effect=sync):
+            answer = qtetherd.handle_request(
+                FakeTether(stats()), SERIAL, {"cmd": "wifi-sync"}
+            )
+        self.assertEqual(answer, {"ok": True, "result": "same"})
+        self.assertEqual(seen, [True])
 
 
 class WifiSync(unittest.TestCase):

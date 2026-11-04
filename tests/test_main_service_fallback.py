@@ -41,6 +41,8 @@ def window(**kw):
         _connected=False,
         _service_mode=True,
         _last_status={},
+        _service_refused=False,
+        _status_in_flight=False,
         _auto_connect_pending=False,
         _connect_btn=Mock(),
         _log_panel=Mock(),
@@ -48,6 +50,16 @@ def window(**kw):
     )
     base.update(kw)
     return SimpleNamespace(**base)
+
+
+class _ImmediateThread:
+    """Run worker targets inline so tests do not race the Tk thread."""
+
+    def __init__(self, target, daemon=None, **kwargs):
+        self.target = target
+
+    def start(self):
+        self.target()
 
 
 class Reprobes(unittest.TestCase):
@@ -62,9 +74,38 @@ class Reprobes(unittest.TestCase):
         w._fall_back_to_process.assert_not_called()
 
     def test_dead_service_falls_back_to_the_process(self):
-        w = window(_probe_service=Mock(return_value=None), _fall_back_to_process=Mock())
+        w = window(
+            _probe_service=Mock(return_value=None),
+            _fall_back_to_process=Mock(),
+            _service_refused=True,
+        )
         self.assertFalse(MAIN.QuestTetherApp._reprobe_service.__get__(w)())
         w._fall_back_to_process.assert_called_once_with()
+
+    def test_slow_service_timeout_does_not_fall_back(self):
+        w = window(
+            _probe_service=Mock(return_value=None),
+            _fall_back_to_process=Mock(),
+            _service_refused=False,
+        )
+        self.assertTrue(MAIN.QuestTetherApp._reprobe_service.__get__(w)())
+        w._fall_back_to_process.assert_not_called()
+
+
+class Probes(unittest.TestCase):
+    def test_refused_connection_marks_the_service_gone(self):
+        w = window()
+        with patch.object(
+            MAIN.qtetherd, "request", side_effect=ConnectionRefusedError()
+        ):
+            self.assertIsNone(MAIN.QuestTetherApp._probe_service.__get__(w)())
+        self.assertTrue(w._service_refused)
+
+    def test_timeout_keeps_the_service_alive(self):
+        w = window()
+        with patch.object(MAIN.qtetherd, "request", side_effect=TimeoutError()):
+            self.assertIsNone(MAIN.QuestTetherApp._probe_service.__get__(w)())
+        self.assertFalse(w._service_refused)
 
 
 class Fallback(unittest.TestCase):
@@ -136,17 +177,58 @@ class Actions(unittest.TestCase):
         w._run_service_command.assert_called_once_with({"cmd": "connect"})
         w.tether.connect.assert_not_called()
 
-    def test_setting_change_reprobes_the_service_first(self):
+    def test_setting_change_reprobes_the_service_in_a_worker(self):
         w = window(
             _reprobe_service=Mock(return_value=False),
             _service_request=Mock(),
         )
 
-        answer = MAIN.QuestTetherApp._push_setting.__get__(w)("auto_reconnect", True)
+        with patch.object(MAIN.threading, "Thread", _ImmediateThread):
+            answer = MAIN.QuestTetherApp._push_setting.__get__(w)(
+                "auto_reconnect", True
+            )
 
-        self.assertFalse(answer)
+        self.assertTrue(answer)
         w._reprobe_service.assert_called_once_with()
         w._service_request.assert_not_called()
+
+    def test_setting_change_is_sent_through_the_service(self):
+        w = window(
+            _reprobe_service=Mock(return_value=True),
+            _service_request=Mock(return_value={"ok": True}),
+        )
+
+        with patch.object(MAIN.threading, "Thread", _ImmediateThread):
+            answer = MAIN.QuestTetherApp._push_setting.__get__(w)(
+                "auto_reconnect", True
+            )
+
+        self.assertTrue(answer)
+        w._service_request.assert_called_once_with(
+            {"cmd": "settings-set", "settings": {"auto_reconnect": True}},
+            timeout=5.0,
+        )
+
+    def test_ui_refresh_polls_status_off_the_tk_thread(self):
+        w = window(
+            _service_request=Mock(return_value={"state": "idle"}),
+            _apply_service_status=Mock(),
+            _adb_status=Mock(),
+            _update_tray=Mock(),
+            _ui_refresh_id=None,
+        )
+        w._fetch_service_status = MAIN.QuestTetherApp._fetch_service_status.__get__(w)
+        w._show_service_status = MAIN.QuestTetherApp._show_service_status.__get__(w)
+        w._ui_refresh_loop = Mock()
+        w.after = lambda ms, fn=None, *a: fn(*a) if fn and ms == 0 else None
+
+        with patch.object(MAIN.threading, "Thread", _ImmediateThread):
+            MAIN.QuestTetherApp._ui_refresh_loop.__get__(w)()
+
+        w._service_request.assert_called_once_with(
+            {"cmd": "status"}, timeout=1.0, quiet=True
+        )
+        w._apply_service_status.assert_called_once_with({"state": "idle"})
 
 
 class Reenable(unittest.TestCase):
