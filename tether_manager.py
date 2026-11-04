@@ -133,10 +133,13 @@ class TetherManager:
             search_dirs.append(os.path.join(os.path.dirname(sys.executable), "tools"))
         search_dirs.append(os.path.join(os.path.dirname(__file__), "tools"))
         for tools_dir in search_dirs:
-            for name, _needs_java in self.platform.relay_candidates():
+            for name, needs_java in self.platform.relay_candidates():
                 path = os.path.join(tools_dir, name)
-                if os.path.isfile(path):
-                    return path
+                if not os.path.isfile(path):
+                    continue
+                if not needs_java and not os.access(path, os.X_OK):
+                    continue
+                return path
         return ""
 
     def _relay_needs_java(self) -> bool:
@@ -152,7 +155,7 @@ class TetherManager:
         if not self.gnirehtet_path or not os.path.isfile(self.gnirehtet_path):
             return False
         if not self._relay_needs_java():
-            return True
+            return os.access(self.gnirehtet_path, os.X_OK)
         try:
             result = subprocess.run(
                 [self._java_path, "-version"],

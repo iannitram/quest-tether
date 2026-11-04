@@ -73,6 +73,32 @@ class SyncQuestWifi(unittest.TestCase):
         )
         self.assertFalse(any("connect-network" in str(args) for args in adb.commands))
 
+    def test_same_when_the_key_lookup_names_a_different_network(self):
+        platform = FakePlatform("OldNet", ("NewNet", "secret", "wpa2"))
+        adb = FakeADB(["OldNet"])
+        logs = []
+
+        result = net_sync.sync_quest_wifi(
+            adb, "S1", logs.append, settle_seconds=0, platform=platform
+        )
+
+        self.assertEqual(result, "same")
+        self.assertEqual(platform.wifi_calls, 0)
+        self.assertFalse(any("connect-network" in str(args) for args in adb.commands))
+
+    def test_manual_after_a_mid_sync_switch_does_not_connect(self):
+        platform = FakePlatform("OldNet", None)
+        adb = FakeADB(["OtherNet"])
+        logs = []
+
+        result = net_sync.sync_quest_wifi(
+            adb, "S1", logs.append, settle_seconds=0, platform=platform
+        )
+
+        self.assertEqual(result, "manual")
+        self.assertTrue(any('Join "OldNet" on the headset manually' in m for m in logs))
+        self.assertFalse(any("connect-network" in str(args) for args in adb.commands))
+
     def test_switched_passes_security_keyword_to_connect_network(self):
         platform = FakePlatform("ExampleNet", ("ExampleNet", "secret", "wpa3"))
         adb = FakeADB(["OtherNet", "ExampleNet"])

@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -109,12 +110,53 @@ class RelayLookupTests(unittest.TestCase):
             os.makedirs(tools)
             relay = os.path.join(tools, "gnirehtet")
             open(relay, "w").close()
+            os.chmod(relay, 0o755)
 
             with patch("tether_manager.subprocess.run") as run:
                 manager = self.make_manager(LinuxPlatform(), root)
                 self.assertEqual(manager.gnirehtet_path, relay)
                 self.assertTrue(manager.is_relay_available())
                 run.assert_not_called()
+
+    @unittest.skipIf(sys.platform == "win32", "X_OK has no meaning on Windows")
+    def test_linux_ignores_a_non_executable_relay(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools = os.path.join(root, "tools")
+            os.makedirs(tools)
+            relay = os.path.join(tools, "gnirehtet")
+            open(relay, "w").close()
+            os.chmod(relay, 0o644)
+
+            manager = self.make_manager(LinuxPlatform(), root)
+
+            self.assertEqual(manager.gnirehtet_path, "")
+            self.assertFalse(manager.is_relay_available())
+
+    def _windows_manager_with_jar(self, root):
+        tools = os.path.join(root, "tools")
+        os.makedirs(tools)
+        jar = os.path.join(tools, "gnirehtet.jar")
+        open(jar, "wb").close()
+        return self.make_manager(WindowsPlatform(), root), jar
+
+    def test_windows_jar_with_java_is_available(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager, jar = self._windows_manager_with_jar(root)
+
+            with patch(
+                "tether_manager.subprocess.run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ):
+                self.assertEqual(manager.gnirehtet_path, jar)
+                self.assertTrue(manager.is_relay_available())
+
+    def test_windows_jar_without_java_is_not_available(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager, jar = self._windows_manager_with_jar(root)
+
+            with patch("tether_manager.subprocess.run", side_effect=FileNotFoundError):
+                self.assertEqual(manager.gnirehtet_path, jar)
+                self.assertFalse(manager.is_relay_available())
 
     def test_windows_does_not_accept_an_extensionless_relay(self):
         with tempfile.TemporaryDirectory() as root:
