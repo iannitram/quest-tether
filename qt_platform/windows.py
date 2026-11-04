@@ -157,8 +157,10 @@ class WindowsPlatform(Platform):
         return [("gnirehtet.jar", True)]
 
     @staticmethod
-    def _is_gnirehtet_pid(pid: int) -> bool:
+    def _is_gnirehtet_pid(pid: int) -> Optional[bool]:
         # from tether_manager.TetherManager._is_gnirehtet_pid
+        # None means the command line could not be read; that is not the same
+        # as a readable line proving the PID belongs to another program.
         try:
             r = subprocess.run(
                 [
@@ -173,10 +175,10 @@ class WindowsPlatform(Platform):
                 creationflags=CREATE_NO_WINDOW,
             )
             if r.returncode != 0 or not r.stdout.strip():
-                return True
+                return None
             return "gnirehtet" in r.stdout.lower()
         except Exception:
-            return True
+            return None
 
     def stale_relay_pids(self, port: int) -> List[int]:
         # from tether_manager.TetherManager._kill_stale_process (the netstat scan; the kill is kill())
@@ -192,7 +194,13 @@ class WindowsPlatform(Platform):
             if str(port) in line and "LISTENING" in line:
                 parts = line.split()
                 pid = int(parts[-1])
-                if not self._is_gnirehtet_pid(pid):
+                is_gnirehtet = self._is_gnirehtet_pid(pid)
+                if is_gnirehtet is None:
+                    logger.info(
+                        f"Port {port} is held by PID {pid}: command line unreadable — leaving it alone"
+                    )
+                    continue
+                if not is_gnirehtet:
                     logger.info(
                         f"Port {port} is held by PID {pid}, which is not gnirehtet — leaving it alone"
                     )

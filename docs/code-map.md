@@ -6,8 +6,8 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 
 | Path | Owns | State | Musts |
 |---|---|---|---|
-| `adb_manager.py` | `ADBManager`: find adb, list devices, find the Quest, device details, start/stop the gnirehtet client on the headset, VPN up/down, `tun0` stats, Wi-Fi toggle, USB monitor loop. | present (Windows paths inside) | M1, M2, M5 |
-| `tether_manager.py` | `TetherManager` + `TetherState` + `TetherStats`: the relay process (`gnirehtet run`), connect/disconnect, health monitor and heal, auto-reconnect, stats, the headset Wi-Fi policy. The tether core. | present (OS calls go through `qt_platform.current()`) | M1-M5 |
+| `adb_manager.py` | `ADBManager`: find adb, list devices, find the Quest, device details, start/stop the gnirehtet client on the headset (an `Error` line in the `am start` reply means the intent was refused, #63), VPN up/down, `tun0` stats, Wi-Fi toggle, USB monitor loop. | present (Windows paths inside) | M1, M2, M5 |
+| `tether_manager.py` | `TetherManager` + `TetherState` + `TetherStats`: the relay process (`gnirehtet run`), connect/disconnect, health monitor and heal, auto-reconnect (`reconnect_count` counts outages, not attempts, #79), stats, the headset Wi-Fi policy. The tether core. | present (OS calls go through `qt_platform.current()`) | M1-M5 |
 | `heal.py` | **New.** `Healer`: the pure heal ladder and flap breaker lifted out of the health loop. `now` is passed in, nothing sleeps, and every reading returns `None`, `RestartClient`, `RestartAdbThenClient`, `FullReconnect` or `GiveUp`. | present | M2 |
 | `relay_log.py` | Pure parser: relay "Client #N connected/disconnected" lines and the connected-client set (#62). | new | M1 |
 | `net_sync.py` | Copy the PC's Wi-Fi network to the headset: PC SSID, key and security from the platform layer, then `cmd wifi` on the headset. | present (platform-backed) | M5, M7 |
@@ -29,7 +29,7 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `tool_path(name, base_dirs)` | `adb.exe` in `tools/` next to the EXE, else `where` | `adb` in `tools/` next to the binary, else `which` |
 | `no_window_flags()` | `subprocess.CREATE_NO_WINDOW` | `0` |
 | `relay_command(tools, serial)` | `java -jar gnirehtet.jar run <serial>` (Java relay, #9) | `gnirehtet run <serial>` (native relay; Java fallback if #9 says so) |
-| `stale_relay_pids(port)` / `kill(pid)` / `kill_tree(pid)` | `netstat -ano` + PowerShell command line + `taskkill` (`kill_tree` adds `/T`) | `ss -ltnp` (or `/proc/net/tcp` + `/proc/<pid>/cmdline`) + `os.kill` |
+| `stale_relay_pids(port)` / `kill(pid)` / `kill_tree(pid)` | `netstat -ano` + PowerShell command line + `taskkill` (`kill_tree` adds `/T`); an unreadable command line is never treated as gnirehtet (#67) | `ss -ltnp` (or `/proc/net/tcp` + `/proc/<pid>/cmdline`) + `os.kill`; an unreadable command line is never treated as gnirehtet (#67) |
 | `pc_wifi()` -> `(ssid, key, security)` | `netsh wlan show interfaces` / `show profile key=clear`; `security` is `wpa2` or `wpa3` | `nmcli` on the active Wi-Fi connection: `802-11-wireless.ssid`, `802-11-wireless-security.psk`, `802-11-wireless-security.key-mgmt` (`wpa-psk` -> `wpa2`, `sae` -> `wpa3`) |
 | `single_instance(name)` | named mutex `Local\QuestTetherSingleInstance` (today's code) | a lock file in `data_dir()` (`fcntl.flock`) |
 | `autostart()` / `set_autostart(on)` | `HKCU\...\Run` value with `--minimized` | `~/.config/autostart/quest-tether.desktop` with `--minimized` |
@@ -70,6 +70,7 @@ flowchart LR
 ## Open-source pieces
 
 - gnirehtet (Genymobile, Apache-2.0): the relay and headset APK; Java relay on Windows, native relay on Linux.
+- gnirehtet-gui (Apache-2.0): the `am start` `Error:` detection pattern reused by `am_result.py` and `adb_manager.py` (#63); attribution in `NOTICE`.
 - Android platform-tools (`adb`): per-OS binary from Google's download, in the package.
 - CustomTkinter, pystray, Pillow (already used).
 - Decky Loader's plugin template (`decky-plugin-template`, `@decky/ui`, `@decky/api`) for the plugin's frontend build.

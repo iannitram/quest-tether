@@ -248,15 +248,31 @@ class StaleRelayPids(unittest.TestCase):
             self.assertEqual(WindowsPlatform().stale_relay_pids(31416), [4242])
         self.assertEqual(killed, [])  # lookup only; killing is kill()
 
-    def test_lookup_failure_counts_as_gnirehtet(self):
-        """The command-line lookup fails open: no command line means it is treated as gnirehtet."""
+    def test_unreadable_command_line_is_not_gnirehtet(self):
+        """The command-line lookup fails closed: no command line means it is not ours."""
         netstat = _netstat(
             [
                 "  TCP    127.0.0.1:31416        0.0.0.0:0              LISTENING       6000"
             ]
         )
         with mock.patch("subprocess.run", side_effect=_fake_run(netstat, {}, [])):
-            self.assertEqual(WindowsPlatform().stale_relay_pids(31416), [6000])
+            with self.assertLogs("qt_platform.windows", level="INFO") as logs:
+                self.assertEqual(WindowsPlatform().stale_relay_pids(31416), [])
+        self.assertTrue(any("command line unreadable" in line for line in logs.output))
+        self.assertFalse(any("which is not gnirehtet" in line for line in logs.output))
+
+    def test_command_line_lookup_error_is_not_gnirehtet(self):
+        """A failed PowerShell query also fails closed."""
+
+        def run(args, **kw):
+            if args[0] == "netstat":
+                return completed(args, 0, self.NETSTAT)
+            if args[0] == "powershell":
+                return completed(args, 1, "")
+            raise AssertionError(f"unexpected command: {args}")
+
+        with mock.patch("subprocess.run", side_effect=run):
+            self.assertEqual(WindowsPlatform().stale_relay_pids(31416), [])
 
     def test_netstat_failure_propagates_to_the_caller(self):
         """The caller (_kill_stale_process) logs the warning to the UI; do not swallow it here."""

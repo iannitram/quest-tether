@@ -14,6 +14,7 @@ SS = (
     "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n"
     'LISTEN 0 50 127.0.0.1:31416 0.0.0.0:* users:(("gnirehtet",pid=4242,fd=7))\n'
     'LISTEN 0 50 [::]:31416 [::]:* users:(("java",pid=77,fd=9))\n'
+    'LISTEN 0 50 [::]:31416 [::]:* users:(("other",pid=9000,fd=9))\n'
 )
 CMDLINES = {4242: "/t/gnirehtet run X", 77: "/usr/bin/sshd -D"}
 
@@ -79,6 +80,12 @@ class StaleRelayAndKill(unittest.TestCase):
         with mock.patch.object(linux, "_run", return_value=SS) as run:
             self.assertEqual(LinuxPlatform().stale_relay_pids(31416), [4242])
             run.assert_called_once_with(["ss", "-ltnp"])
+
+    def test_stale_relay_pids_fails_closed_when_the_command_line_is_unreadable(self):
+        # 4242 is gnirehtet, 77 is another program and 9000 has no readable
+        # command line: only the first may be treated as ours.
+        with mock.patch.object(linux, "_run", return_value=SS):
+            self.assertEqual(LinuxPlatform().stale_relay_pids(31416), [4242])
 
     def test_stale_relay_pids_empty_when_ss_fails(self):
         with mock.patch.object(linux, "_run", return_value=""):
