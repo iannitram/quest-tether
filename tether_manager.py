@@ -16,9 +16,7 @@ from typing import Optional, Callable, Dict
 from dataclasses import dataclass
 from adb_manager import ADBManager
 import net_sync
-
-# Suppress console windows for all subprocess calls on Windows
-_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+import qt_platform
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +38,7 @@ def _state_for_tunnel(tun0_present: bool) -> TetherState:
 @dataclass
 class TetherStats:
     """Live connection statistics."""
+
     state: TetherState = TetherState.IDLE
     uptime_seconds: float = 0.0
     rx_bytes: int = 0
@@ -80,11 +79,14 @@ class TetherManager:
     WIFI_SYNC_INTERVAL = 30.0
     WIFI_SYNC_MAX_ATTEMPTS = 3
 
-    LOG_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "QuestTether")
-
-    def __init__(self, adb: ADBManager, gnirehtet_path: Optional[str] = None):
+    def __init__(
+        self, adb: ADBManager, gnirehtet_path: Optional[str] = None, platform=None
+    ):
         self.adb = adb
-        self._java_path = self._find_java()
+        self.platform = platform or qt_platform.current()
+        self._data_dir = self.platform.data_dir()
+        self._wifi_flag = os.path.join(self._data_dir, "wifi-off.flag")
+        self._java_path = self.platform.tool_path("java", []) or "java"
         self.gnirehtet_path = gnirehtet_path or self._find_gnirehtet()
 
         self._process: Optional[subprocess.Popen] = None
@@ -104,12 +106,14 @@ class TetherManager:
         self._tun_misses = 0
         self._heals_in_row = 0
         self._last_heal_time = 0.0
-        self._recovery_events: list = []   # timestamps of heals + reconnects
+        self._recovery_events: list = []  # timestamps of heals + reconnects
         # Headset Wi-Fi policy while tethered: 'off' | 'sync' | 'leave'
-        self._wifi_mode = os.environ.get('QT_WIFI_MODE', 'off')
-        self._wifi_off_failed = False   # tunnel check failed once this session; don't retry-loop
+        self._wifi_mode = os.environ.get("QT_WIFI_MODE", "off")
+        self._wifi_off_failed = (
+            False  # tunnel check failed once this session; don't retry-loop
+        )
         self._last_wifi_check = 0.0
-        self._wifi_attempts: Dict[str, int] = {}   # PC SSID -> failed attempts
+        self._wifi_attempts: Dict[str, int] = {}  # PC SSID -> failed attempts
         self._relay_log = None
 
         # Callbacks
@@ -117,42 +121,33 @@ class TetherManager:
         self._on_stats_update: Optional[Callable] = None
         self._on_log: Optional[Callable] = None
 
-    def _find_java(self) -> str:
-        """Locate Java runtime."""
-        try:
-            result = subprocess.run(
-                ["where", "java"] if os.name == "nt" else ["which", "java"],
-                capture_output=True, text=True, timeout=5,
-                creationflags=_NO_WINDOW,
-            )
-            if result.returncode == 0:
-                return result.stdout.strip().split("\n")[0].strip()
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-        return "java"
-
     def _find_gnirehtet(self) -> str:
-        """Locate gnirehtet Java JAR. Check next to exe (frozen builds) first,
-        then next to script."""
+        """Locate the relay: the Java JAR or the native gnirehtet binary.
+        Check next to exe (frozen builds) first, then next to script."""
         search_dirs = []
-        if getattr(sys, 'frozen', False):
+        if getattr(sys, "frozen", False):
             search_dirs.append(os.path.join(os.path.dirname(sys.executable), "tools"))
         search_dirs.append(os.path.join(os.path.dirname(__file__), "tools"))
         for tools_dir in search_dirs:
-            jar_path = os.path.join(tools_dir, "gnirehtet.jar")
-            if os.path.isfile(jar_path):
-                return jar_path
+            for name in ("gnirehtet.jar", "gnirehtet"):
+                path = os.path.join(tools_dir, name)
+                if os.path.isfile(path):
+                    return path
         return ""
 
     def is_relay_available(self) -> bool:
-        """Check if gnirehtet JAR and Java runtime are available."""
+        """Check if the relay file and, for the Java relay, the runtime are available."""
         if not self.gnirehtet_path or not os.path.isfile(self.gnirehtet_path):
             return False
+        if not self.gnirehtet_path.lower().endswith(".jar"):
+            return True
         try:
             result = subprocess.run(
                 [self._java_path, "-version"],
-                capture_output=True, text=True, timeout=5,
-                creationflags=_NO_WINDOW,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                creationflags=self.platform.no_window_flags(),
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -167,7 +162,6 @@ class TetherManager:
         self._auto_reconnect = value
 
     WIFI_MODES = ("off", "sync", "leave")
-    WIFI_FLAG = os.path.join(LOG_DIR, "wifi-off.flag")
 
     @property
     def wifi_mode(self) -> str:
@@ -200,52 +194,23 @@ class TetherManager:
 
     def _kill_stale_process(self):
         """Kill any orphaned gnirehtet process holding port 31416."""
-        if os.name != "nt":
-            return
         try:
-            result = subprocess.run(
-                ["netstat", "-ano"],
-                capture_output=True, text=True, timeout=5,
-                creationflags=_NO_WINDOW,
-            )
-            for line in result.stdout.split("\n"):
-                if "31416" in line and "LISTENING" in line:
-                    parts = line.split()
-                    pid = int(parts[-1])
-                    if self._process and self._process.pid == pid:
-                        continue
-                    if not self._is_gnirehtet_pid(pid):
-                        self._log(f"Port 31416 is held by PID {pid}, which is not gnirehtet — leaving it alone")
-                        continue
-                    self._log(f"Found stale process on port 31416 (PID {pid}) — killing...")
-                    subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                                   capture_output=True, timeout=5,
-                                   creationflags=_NO_WINDOW)
-                    time.sleep(0.5)
-                    self._log("Stale process killed")
+            for pid in self.platform.stale_relay_pids(self.RELAY_PORT):
+                if self._process and self._process.pid == pid:
+                    continue
+                self._log(
+                    f"Found stale process on port {self.RELAY_PORT} (PID {pid}) — killing..."
+                )
+                self.platform.kill(pid)
+                self._log("Stale process killed")
         except Exception as e:
             self._log(f"Warning: could not check for stale process: {e}")
-
-    @staticmethod
-    def _is_gnirehtet_pid(pid: int) -> bool:
-        """True if the PID's command line mentions gnirehtet. Fails open (True)
-        if the lookup itself fails, matching the old kill-anything behaviour."""
-        try:
-            r = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
-                capture_output=True, text=True, timeout=10, creationflags=_NO_WINDOW,
-            )
-            if r.returncode != 0 or not r.stdout.strip():
-                return True
-            return "gnirehtet" in r.stdout.lower()
-        except Exception:
-            return True
 
     def _spawn_relay(self, serial: str) -> bool:
         """Start `gnirehtet run` with output appended to relay.log (never DEVNULL —
         a silent relay failure is what hid the no-tunnel bug)."""
-        cmd = [self._java_path, "-jar", self.gnirehtet_path, "run", serial]
+        tools_dir = os.path.dirname(self.gnirehtet_path)
+        cmd = self.platform.relay_command(tools_dir, serial)
 
         # gnirehtet run calls adb internally; ADB may not be on PATH.
         env = os.environ.copy()
@@ -255,29 +220,33 @@ class TetherManager:
             env["GNIREHTET_APK"] = apk_path
 
         try:
-            os.makedirs(self.LOG_DIR, exist_ok=True)
+            os.makedirs(self._data_dir, exist_ok=True)
             if self._relay_log:
                 try:
                     self._relay_log.close()
                 except Exception:
                     pass
-            self._relay_log = open(os.path.join(self.LOG_DIR, "relay.log"), "ab")
-            self._relay_log.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} relay start {serial} ===\n".encode())
+            self._relay_log = open(os.path.join(self._data_dir, "relay.log"), "ab")
+            self._relay_log.write(
+                f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} relay start {serial} ===\n".encode()
+            )
             self._relay_log.flush()
             out = self._relay_log
         except OSError:
             out = subprocess.DEVNULL
 
-        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         self._process = subprocess.Popen(
-            cmd, stdout=out, stderr=subprocess.STDOUT,
-            creationflags=creationflags, env=env,
+            cmd,
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            creationflags=self.platform.no_window_flags(),
+            env=env,
         )
         self.stats.relay_pid = self._process.pid
         return True
 
     def _kill_process(self):
-        """Kill the gnirehtet run process. Escalates through terminate → kill → taskkill."""
+        """Kill the gnirehtet run process. Escalates through terminate → kill → platform kill."""
         if not self._process:
             return
         pid = self._process.pid
@@ -291,10 +260,7 @@ class TetherManager:
             try:
                 self._process.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                if os.name == "nt":
-                    subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                                   capture_output=True, timeout=5,
-                                   creationflags=_NO_WINDOW)
+                self.platform.kill(pid)
         self._process = None
         self.stats.relay_pid = None
 
@@ -308,12 +274,7 @@ class TetherManager:
             return
         pid = self._process.pid
         try:
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                               capture_output=True, timeout=5,
-                               creationflags=_NO_WINDOW)
-            else:
-                self._process.kill()
+            self.platform.kill_tree(pid)
             self._process.wait(timeout=5)
         except Exception:
             pass
@@ -457,7 +418,9 @@ class TetherManager:
                 time.sleep(1.5)
 
             if not wifi_ok:
-                self._log("Could not confirm Wi-Fi restored — may need manual reconnect")
+                self._log(
+                    "Could not confirm Wi-Fi restored — may need manual reconnect"
+                )
 
             # Step 6: Clean up any lingering ADB tunnels
             self.adb.remove_all_reverse_tunnels(serial)
@@ -522,7 +485,10 @@ class TetherManager:
                             return  # flapping breaker tripped or full reconnect took over
 
                 # Keep the headset Wi-Fi policy applied (headset may re-enable Wi-Fi itself)
-                if self._wifi_mode != 'leave' and time.time() - self._last_wifi_check >= self.WIFI_SYNC_INTERVAL:
+                if (
+                    self._wifi_mode != "leave"
+                    and time.time() - self._last_wifi_check >= self.WIFI_SYNC_INTERVAL
+                ):
                     self._apply_wifi_policy(serial)
 
             except Exception as e:
@@ -535,19 +501,23 @@ class TetherManager:
     def _note_recovery(self) -> int:
         """Record a heal/reconnect event; return how many fell inside the flap window."""
         now = time.time()
-        self._recovery_events = [t for t in self._recovery_events if now - t < self.FLAP_WINDOW]
+        self._recovery_events = [
+            t for t in self._recovery_events if now - t < self.FLAP_WINDOW
+        ]
         self._recovery_events.append(now)
         return len(self._recovery_events)
 
     def _flapping(self, reason: str) -> bool:
         """Trip the breaker if we've been recovering too often. Returns True if tripped."""
         if self._note_recovery() > self.FLAP_LIMIT:
-            self._log(f"Connection is flapping ({self.FLAP_LIMIT}+ recoveries in "
-                      f"{int(self.FLAP_WINDOW // 60)} min, last: {reason}) — stopping auto-recovery")
+            self._log(
+                f"Connection is flapping ({self.FLAP_LIMIT}+ recoveries in "
+                f"{int(self.FLAP_WINDOW // 60)} min, last: {reason}) — stopping auto-recovery"
+            )
             self._set_state(
                 TetherState.ERROR,
                 "Tether keeps dropping — check the USB cable/port, that only one Quest Tether "
-                "is running, and %LOCALAPPDATA%\\QuestTether\\relay.log",
+                "is running, and " + os.path.join(self._data_dir, "relay.log"),
             )
             self._running = False
             return True
@@ -648,9 +618,16 @@ class TetherManager:
                         self.stats.battery_level = line.split(":")[-1].strip() + "%"
                     elif "status:" in line:
                         status_code = line.split(":")[-1].strip()
-                        status_map = {"1": "Unknown", "2": "Charging", "3": "Discharging",
-                                      "4": "Not Charging", "5": "Full"}
-                        self.stats.battery_status = status_map.get(status_code, status_code)
+                        status_map = {
+                            "1": "Unknown",
+                            "2": "Charging",
+                            "3": "Discharging",
+                            "4": "Not Charging",
+                            "5": "Full",
+                        }
+                        self.stats.battery_status = status_map.get(
+                            status_code, status_code
+                        )
                     elif "temperature:" in line:
                         temp_raw = line.split(":")[-1].strip()
                         try:
@@ -673,7 +650,7 @@ class TetherManager:
 
     def _clear_wifi_flag(self):
         try:
-            os.remove(self.WIFI_FLAG)
+            os.remove(self._wifi_flag)
         except OSError:
             pass
 
@@ -689,24 +666,28 @@ class TetherManager:
         if not self.adb.is_vpn_up(serial):
             return  # never cut Wi-Fi without a tunnel underneath
         try:
-            os.makedirs(self.LOG_DIR, exist_ok=True)
-            with open(self.WIFI_FLAG, "w") as f:
+            os.makedirs(self._data_dir, exist_ok=True)
+            with open(self._wifi_flag, "w") as f:
                 f.write(time.strftime("%Y-%m-%d %H:%M:%S"))
         except OSError:
             pass
         self.adb.run_adb("-s", serial, "shell", "svc", "wifi", "disable")
         time.sleep(3.0)
-        if self.adb.check_wifi_connectivity(serial):  # despite the name: tests the default route
+        if self.adb.check_wifi_connectivity(
+            serial
+        ):  # despite the name: tests the default route
             self._log("Headset Wi-Fi off — all traffic on the USB tunnel")
         else:
-            self._log("Tunnel didn't carry traffic with Wi-Fi off — turning Wi-Fi back on")
+            self._log(
+                "Tunnel didn't carry traffic with Wi-Fi off — turning Wi-Fi back on"
+            )
             self.adb.run_adb("-s", serial, "shell", "svc", "wifi", "enable")
             self._clear_wifi_flag()
             self._wifi_off_failed = True
 
     def restore_wifi_if_flagged(self, serial: str):
         """If a previous session left the headset's Wi-Fi off, turn it back on."""
-        if os.path.exists(self.WIFI_FLAG):
+        if os.path.exists(self._wifi_flag):
             self._log("Restoring headset Wi-Fi left off by a previous session")
             self.adb.run_adb("-s", serial, "shell", "svc", "wifi", "enable")
             self._clear_wifi_flag()
@@ -717,15 +698,19 @@ class TetherManager:
         """Put the headset on the PC's Wi-Fi. Bounded per PC network so a bad
         password or out-of-range AP can't turn into a retry loop."""
         self._last_wifi_check = time.time()
-        pc = net_sync.get_pc_ssid()
+        pc = net_sync.get_pc_ssid(self.platform)
         if pc and self._wifi_attempts.get(pc, 0) >= self.WIFI_SYNC_MAX_ATTEMPTS:
             return
-        result = net_sync.sync_quest_wifi(self.adb, serial, self._log)
+        result = net_sync.sync_quest_wifi(
+            self.adb, serial, self._log, platform=self.platform
+        )
         if pc:
             if result in ("failed", "manual"):
                 self._wifi_attempts[pc] = self._wifi_attempts.get(pc, 0) + 1
                 if self._wifi_attempts[pc] >= self.WIFI_SYNC_MAX_ATTEMPTS:
-                    self._log(f"Wi-Fi sync: giving up on \"{pc}\" until the PC's network changes")
+                    self._log(
+                        f'Wi-Fi sync: giving up on "{pc}" until the PC\'s network changes'
+                    )
             else:
                 self._wifi_attempts.pop(pc, None)
 
@@ -749,7 +734,9 @@ class TetherManager:
         self._reconnect_attempts += 1
         self.stats.reconnect_count += 1
         self._set_state(TetherState.RECONNECTING)
-        self._log(f"Reconnect attempt {self._reconnect_attempts}/{self.MAX_RECONNECT_ATTEMPTS}")
+        self._log(
+            f"Reconnect attempt {self._reconnect_attempts}/{self.MAX_RECONNECT_ATTEMPTS}"
+        )
 
         # Kill the old process
         self._kill_process()

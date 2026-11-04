@@ -1,4 +1,5 @@
 """The interface every platform module implements (docs/code-map.md, "The platform layer")."""
+
 from typing import List, Optional, Sequence, Tuple
 
 
@@ -31,8 +32,15 @@ class Platform:
         """Force-stop one process."""
         raise NotImplementedError
 
-    def pc_wifi(self) -> Optional[Tuple[str, str]]:
-        """(SSID, key) of the PC's current Wi-Fi network, or None if not on Wi-Fi or unreadable."""
+    def kill_tree(self, pid: int) -> None:
+        """Force-stop a process and its children."""
+        raise NotImplementedError
+
+    def pc_wifi(self) -> Optional[Tuple[str, str, str]]:
+        """(SSID, key, security) of the PC's current Wi-Fi network, or None if not on Wi-Fi or unreadable.
+
+        security is the headset's `cmd wifi connect-network` keyword: wpa2 or wpa3.
+        """
         raise NotImplementedError
 
     def single_instance(self, name: str) -> bool:

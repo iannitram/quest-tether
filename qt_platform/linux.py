@@ -5,6 +5,7 @@ pc_wifi (#33), and for single_instance, autostart and set_autostart (#34).
 The parsing and path rules live in linux_parse.py and linux_paths.py (pure, no system calls).
 fcntl is not imported at the top: it is Unix-only and this module must import on Windows too.
 """
+
 import logging
 import os
 import subprocess
@@ -13,12 +14,20 @@ from typing import List, Optional, Sequence, Tuple
 
 from . import linux_paths
 from .base import Platform
-from .linux_parse import (cmdline_mentions_gnirehtet, parse_active_wifi_connection, parse_psk,
-                          parse_ss_pids, parse_ssid_field)
+from .linux_parse import (
+    cmdline_mentions_gnirehtet,
+    parse_active_wifi_connection,
+    parse_psk,
+    parse_security,
+    parse_ss_pids,
+    parse_ssid_field,
+)
 
 log = logging.getLogger(__name__)
 
-_lock_handle = None  # the single-instance lock file, kept open for the life of the process
+_lock_handle = (
+    None  # the single-instance lock file, kept open for the life of the process
+)
 
 
 def _run(args: List[str], timeout: float = 8) -> str:
@@ -68,8 +77,11 @@ class LinuxPlatform(Platform):
         out = _run(["ss", "-ltnp"])
         if not out:
             return []
-        return [pid for pid in parse_ss_pids(out, port)
-                if cmdline_mentions_gnirehtet(_read_cmdline(pid))]
+        return [
+            pid
+            for pid in parse_ss_pids(out, port)
+            if cmdline_mentions_gnirehtet(_read_cmdline(pid))
+        ]
 
     def kill(self, pid: int) -> None:
         if not cmdline_mentions_gnirehtet(_read_cmdline(pid)):
@@ -77,24 +89,55 @@ class LinuxPlatform(Platform):
             return
         os.kill(pid, 9)
 
-    def pc_wifi(self) -> Optional[Tuple[str, str]]:
-        name = parse_active_wifi_connection(_run(["nmcli", "-t", "-f", "name,type",
-                                                  "connection", "show", "--active"]))
+    def kill_tree(self, pid: int) -> None:
+        os.kill(pid, 9)
+
+    def pc_wifi(self) -> Optional[Tuple[str, str, str]]:
+        name = parse_active_wifi_connection(
+            _run(["nmcli", "-t", "-f", "name,type", "connection", "show", "--active"])
+        )
         if not name:
             return None
-        ssid = parse_ssid_field(_run(["nmcli", "-g", "802-11-wireless.ssid",
-                                      "connection", "show", name]))
+        ssid = parse_ssid_field(
+            _run(["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", name])
+        )
         if not ssid:
             return None
-        key = parse_psk(_run(["nmcli", "-s", "-g", "802-11-wireless-security.psk",
-                              "connection", "show", name]))
+        key = parse_psk(
+            _run(
+                [
+                    "nmcli",
+                    "-s",
+                    "-g",
+                    "802-11-wireless-security.psk",
+                    "connection",
+                    "show",
+                    name,
+                ]
+            )
+        )
         if not key:
             return None
-        return (ssid, key)
+        security = parse_security(
+            _run(
+                [
+                    "nmcli",
+                    "-g",
+                    "802-11-wireless-security.key-mgmt",
+                    "connection",
+                    "show",
+                    name,
+                ]
+            )
+        )
+        if not security:
+            return None
+        return (ssid, key, security)
 
     def single_instance(self, name: str) -> bool:
         global _lock_handle
         import fcntl  # Unix only; imported here so this module still imports on Windows
+
         handle = open(os.path.join(self.data_dir(), name + ".lock"), "w")
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -105,13 +148,19 @@ class LinuxPlatform(Platform):
         return True
 
     def autostart(self) -> bool:
-        return os.path.exists(linux_paths.autostart_path(os.environ, os.path.expanduser("~")))
+        return os.path.exists(
+            linux_paths.autostart_path(os.environ, os.path.expanduser("~"))
+        )
 
     def set_autostart(self, on: bool) -> bool:
         path = linux_paths.autostart_path(os.environ, os.path.expanduser("~"))
         if on:
-            main_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py")
-            command = linux_paths.autostart_command(sys.executable, getattr(sys, "frozen", False), main_py)
+            main_py = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"
+            )
+            command = linux_paths.autostart_command(
+                sys.executable, getattr(sys, "frozen", False), main_py
+            )
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
                 f.write(linux_paths.autostart_entry(command))
