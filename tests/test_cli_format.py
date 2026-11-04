@@ -24,6 +24,19 @@ class FormatRate(unittest.TestCase):
     def test_megabytes(self):
         self.assertEqual(cli_format.format_rate(2_500_000), "2.5 MB/s")
 
+    def test_negative(self):
+        self.assertEqual(cli_format.format_rate(-5), "-")
+
+    def test_bytes_rounds_down(self):
+        self.assertEqual(cli_format.format_rate(999.4), "999 B/s")
+
+    def test_boundary_kb(self):
+        self.assertEqual(cli_format.format_rate(999.6), "1.0 kB/s")
+
+    def test_boundary_mb(self):
+        self.assertEqual(cli_format.format_rate(999_999), "1.0 MB/s")
+        self.assertEqual(cli_format.format_rate(999_940), "999.9 kB/s")
+
 
 class FormatUptime(unittest.TestCase):
     def test_none(self):
@@ -97,6 +110,22 @@ class ExitCode(unittest.TestCase):
     def test_bad_usage(self):
         self.assertEqual(
             cli_format.exit_code({"ok": False, "error": "bad usage"}), 2)
+
+    def test_error_only(self):
+        self.assertEqual(
+            cli_format.exit_code({"error": "no headset found"}), 1)
+
+    def test_bad_usage_wins_over_ok(self):
+        self.assertEqual(
+            cli_format.exit_code({"ok": True, "error": "bad usage"}), 2)
+
+    def test_ok_wins_over_other_error(self):
+        self.assertEqual(
+            cli_format.exit_code({"ok": True, "error": "stale"}), 0)
+
+    def test_error_none_is_ok(self):
+        self.assertEqual(
+            cli_format.exit_code({"state": "connected", "error": None}), 0)
 
 
 if __name__ == "__main__":

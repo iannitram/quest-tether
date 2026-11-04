@@ -2,16 +2,18 @@
 
 
 def format_rate(bps):
-    if bps is None:
+    """Format a rate in bytes/s as B/s, kB/s or MB/s; None or negative -> '-'."""
+    if bps is None or bps < 0:
         return "-"
-    if bps < 1000:
-        return f"{int(bps)} B/s"
-    if bps < 1_000_000:
+    if bps < 999.5:
+        return f"{int(round(bps))} B/s"
+    if bps / 1000 < 999.95:
         return f"{bps / 1000:.1f} kB/s"
     return f"{bps / 1_000_000:.1f} MB/s"
 
 
 def format_uptime(seconds):
+    """Format an uptime in seconds as h/m/s; None or negative -> '-'."""
     if seconds is None or seconds < 0:
         return "-"
     s = int(seconds)
@@ -24,6 +26,7 @@ def format_uptime(seconds):
 
 
 def format_status(status):
+    """Render a status dict as CLI text; rates in B/s, uptime in s, temp in C."""
     lines = [
         f"State:      {status.get('state') or 'unknown'}",
         f"Traffic:    down {format_rate(status.get('rx_bps'))}, "
@@ -45,10 +48,15 @@ def format_status(status):
 
 
 def exit_code(result):
+    """Exit code for a result dict: 2 bad usage, 1 error, 0 ok; non-dict -> 1."""
     if not isinstance(result, dict):
         return 1
     if result.get("error") == "bad usage":
         return 2
     if result.get("ok") is False:
+        return 1
+    if result.get("ok") is True:
+        return 0
+    if result.get("error"):
         return 1
     return 0
