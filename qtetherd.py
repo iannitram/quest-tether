@@ -10,7 +10,7 @@ It owns the one TetherManager on Linux and answers one JSON object per line on
                         -> {"ok": true, "source": "app", "lines": ["...", ...]}
   {"cmd": "settings-get"} -> {"ok": true, "settings": {...}}
   {"cmd": "settings-set", "settings": {...}} -> {"ok": true, "settings": {...}}
-Clients: main.py's window on Linux and the Decky plugin's backend.
+Clients: main.py's window on Linux, the Decky plugin's backend and cli.py.
 """
 
 import collections

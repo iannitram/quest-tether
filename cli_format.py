@@ -37,10 +37,13 @@ def format_status(status):
         f"Uptime:     {format_uptime(status.get('uptime_s'))}",
     ]
     battery = status.get("battery_level")
-    if battery is None:
+    if battery is None or battery == "":
         line = "Battery:    -"
     else:
-        line = f"Battery:    {battery}%"
+        batt_str = str(battery)
+        if not batt_str.endswith("%"):
+            batt_str += "%"
+        line = f"Battery:    {batt_str}"
         if status.get("temp_c") is not None:
             line += f", {status['temp_c']:.1f} C ({status.get('zone') or 'unknown'})"
     lines.append(line)

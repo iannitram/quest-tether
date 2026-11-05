@@ -90,6 +90,21 @@ class FormatStatus(unittest.TestCase):
             "Battery:    -\n"
             "Reconnects: 0")
 
+    def test_empty_battery_level_string(self):
+        self.assertEqual(
+            cli_format.format_status({"battery_level": ""}),
+            "State:      unknown\n"
+            "Traffic:    down -, up -\n"
+            "Uptime:     -\n"
+            "Battery:    -\n"
+            "Reconnects: 0")
+
+    def test_battery_level_with_percent_sign(self):
+        status = {"state": "connected", "battery_level": "81%"}
+        out = cli_format.format_status(status)
+        self.assertIn("Battery:    81%\n", out)
+        self.assertNotIn("81%%", out)
+
     def test_error_without_zone(self):
         status = {"state": "error", "battery_level": 50, "temp_c": 40,
                   "error": "no headset found"}
