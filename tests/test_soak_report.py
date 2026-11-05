@@ -43,6 +43,25 @@ class SoakSummary(unittest.TestCase):
         text = "16:00:00 [INFO] Tethering active!\n16:05:00 [INFO] Tethering active!\n"
         self.assertEqual(soak_report.summarize(text)["connects"], 2)
 
+    def test_garbage_only_text(self):
+        text = "just some random text\nwithout timestamps or log levels"
+        self.assertEqual(soak_report.summarize(text), EMPTY)
+
+    def test_dot_milliseconds(self):
+        text = "2026-11-04 16:23:13.074 [INFO] Tethering active!"
+        summary = soak_report.summarize(text)
+        self.assertEqual(summary["connects"], 1)
+        self.assertEqual(summary["first"], "16:23:13")
+        self.assertEqual(summary["last"], "16:23:13")
+
+    def test_two_disconnects(self):
+        text = "16:00:00 [INFO] Disconnected\n16:05:00 [INFO] Disconnected\n"
+        self.assertEqual(soak_report.summarize(text)["disconnects"], 2)
+
+    def test_two_refusals(self):
+        text = "16:00:00 [INFO] client start refused: Error 1\n16:05:00 [INFO] client start refused: Error 2\n"
+        self.assertEqual(soak_report.summarize(text)["refusals"], 2)
+
 
 class SoakSummaryFormat(unittest.TestCase):
     def test_sample(self):
