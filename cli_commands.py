@@ -497,12 +497,14 @@ def crash_queue(
             return {"ok": False, "error": "crash reports: %s" % exc}
         pending = list(store.pending())
 
-    return {
+    reply = {
         "ok": True,
         "queued": pending,
         "count": len(pending),
-        "sent": sent,
     }
+    if flush:
+        reply["sent"] = sent
+    return reply
 
 
 def service(backend: Backend, action: str) -> dict:

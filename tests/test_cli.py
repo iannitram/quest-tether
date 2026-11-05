@@ -508,6 +508,7 @@ class CrashQueue(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["count"], 2)
             self.assertEqual(result["queued"], ["20261104-a.zip", "20261104-b.zip"])
+            self.assertNotIn("sent", result)
 
     def test_flush_retries_through_the_reporter(self):
         class Reporter:
@@ -643,13 +644,71 @@ class PlatformService(unittest.TestCase):
         )
 
 
+class ConnectHold(unittest.TestCase):
+    def test_hold_service_mode_exits_zero_immediately(self):
+        env = make_env({"connect": {"ok": True}})
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(cli_commands, "make_backend", return_value=env.service):
+            with redirect_stdout(out), redirect_stderr(err):
+                code = cli.main(["connect", "--hold"])
+        self.assertEqual(code, 0)
+        self.assertIn("The service keeps the tether up; nothing to hold.", out.getvalue())
+
+    def test_hold_service_mode_json_exits_zero(self):
+        env = make_env({"connect": {"ok": True}})
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(cli_commands, "make_backend", return_value=env.service):
+            with redirect_stdout(out), redirect_stderr(err):
+                code = cli.main(["connect", "--hold", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue()), {"ok": True})
+
+    def test_hold_in_process_handles_sigint_and_disconnects(self):
+        env = make_env()
+        env.tether.stats.state = TetherState.IDLE
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(cli_commands, "make_backend", return_value=env.local):
+            with patch("time.sleep", side_effect=KeyboardInterrupt):
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = cli.main(["connect", "--hold"])
+        self.assertEqual(code, 0)
+        self.assertIn(("connect", SERIAL), env.tether.calls)
+        self.assertIn(("disconnect",), env.tether.calls)
+        self.assertIn("Holding the tether; press Ctrl+C to stop.", out.getvalue())
+
+    def test_hold_in_process_json_prints_json_to_stdout(self):
+        env = make_env()
+        env.tether.stats.state = TetherState.IDLE
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(cli_commands, "make_backend", return_value=env.local):
+            with patch("time.sleep", side_effect=KeyboardInterrupt):
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = cli.main(["connect", "--hold", "--json"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue().splitlines()[0]), {"ok": True})
+        self.assertIn("Holding the tether", err.getvalue())
+        self.assertIn(("disconnect",), env.tether.calls)
+
+    def test_hold_aborts_when_connect_fails(self):
+        env = make_env()
+        env.adb.quest = None
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(cli_commands, "make_backend", return_value=env.local):
+            with patch("time.sleep", side_effect=AssertionError("should not sleep")):
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = cli.main(["connect", "--hold"])
+        self.assertEqual(code, 1)
+        self.assertNotIn(("disconnect",), env.tether.calls)
+
+
 class EntryPoint(unittest.TestCase):
     class StubBackend:
-        mode = "in-process"
-
-        def __init__(self, reply=None):
+        def __init__(self, reply=None, mode="in-process"):
+            self.mode = mode
             self.reply = reply or status_reply()
             self.platform = FakePlatform(tempfile.mkdtemp())
+            self.adb = FakeADB()
+            self.tether = FakeTether(self.platform.data_dir(), self.adb)
 
         def status(self):
             return dict(self.reply)
@@ -658,7 +717,7 @@ class EntryPoint(unittest.TestCase):
             return {"ok": True, "settings": {}}
 
         def connect(self):
-            return {"ok": True}
+            return dict(self.reply) if "ok" in self.reply else {"ok": True}
 
         def disconnect(self):
             return {"ok": True}
@@ -715,6 +774,67 @@ class EntryPoint(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("State:      connected", out)
         self.assertIn("Serial:     " + SERIAL, out)
+
+    def test_connect_and_disconnect_json(self):
+        backend = self.StubBackend()
+        code, out, _ = self._run(["connect", "--json"], backend)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"ok": True})
+
+        code, out, _ = self._run(["disconnect", "--json"], backend)
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"ok": True})
+
+    def test_wifi_sync_json(self):
+        code, out, _ = self._run(["wifi-sync", "--json"], self.StubBackend())
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"ok": True, "result": "same"})
+
+    def test_logs_json(self):
+        code, out, _ = self._run(["logs", "--json"], self.StubBackend())
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"lines": [], "ok": True, "source": "app"})
+
+    def test_crash_queue_json(self):
+        code, out, _ = self._run(["crash-queue", "--json"], self.StubBackend())
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(out)["ok"])
+
+    def test_settings_get_json(self):
+        code, out, _ = self._run(["settings", "get", "--json"], self.StubBackend())
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(out)["ok"])
+
+    def test_service_start_and_stop_json(self):
+        backend = self.StubBackend()
+        code, out, _ = self._run(["service", "start", "--json"], backend)
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(out)["ok"])
+        code, out, _ = self._run(["service", "stop", "--json"], backend)
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(out)["ok"])
+
+    def test_doctor_json(self):
+        with patch.object(
+            cli_commands, "doctor", return_value={"ok": True, "checks": [], "platform": "linux"}
+        ):
+            code, out, _ = self._run(["doctor", "--json"], self.StubBackend())
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["platform"], "linux")
+
+    def test_install_apk_json(self):
+        with patch.object(
+            cli_commands, "install_apk", return_value={"ok": True, "serial": SERIAL, "output": "ok"}
+        ):
+            code, out, _ = self._run(["install-apk", "--json"], self.StubBackend())
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["serial"], SERIAL)
+
+    def test_gui_json(self):
+        with patch.object(cli_commands, "gui", return_value={"ok": True}):
+            code, out, _ = self._run(["gui", "--json"], self.StubBackend())
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), {"ok": True})
 
 
 if __name__ == "__main__":
