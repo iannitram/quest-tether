@@ -21,6 +21,7 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `am_result.py` | **New.** Pure parser: the first `Error` line of an `am start` reply (#63). | new | - |
 | `cli_format.py` | **New.** Pure text for the CLI: rates, uptime, status block, exit codes (#74). | new | - |
 | `heal_policy.py` | **New.** Pure awake-gated liveness policy: wakefulness parse, restart backoff, `Liveness` transitions (#65). | new | - |
+| `vpn_state.py` | **New.** Pure parser: the gnirehtet VPN agent's state from `dumpsys connectivity`, for a verified "VPN closed" (#64). | new | - |
 
 ## The platform layer (`qt_platform/base.py`)
 
