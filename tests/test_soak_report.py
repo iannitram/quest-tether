@@ -44,5 +44,36 @@ class SoakSummary(unittest.TestCase):
         self.assertEqual(soak_report.summarize(text)["connects"], 2)
 
 
+class SoakSummaryFormat(unittest.TestCase):
+    def test_sample(self):
+        self.assertEqual(
+            soak_report.format_summary(soak_report.summarize(SAMPLE)),
+            "Log span: 16:23:13 to 16:40:05\n"
+            "Connects: 1\n"
+            "Drops: 1\n"
+            "Reconnects: 1\n"
+            "Refusals: 1\n"
+            "Disconnects: 1\n"
+            "Unrecovered drops: 0")
+
+    def test_empty_text(self):
+        text = soak_report.format_summary(soak_report.summarize(""))
+        self.assertTrue(text.startswith("Log span: none\n"))
+        self.assertTrue(text.endswith("Unrecovered drops: 0"))
+
+    def test_two_drops(self):
+        text = "10:00:00 [INFO] gnirehtet process died!\n10:05:00 [INFO] gnirehtet process died!"
+        lines = soak_report.format_summary(soak_report.summarize(text)).splitlines()
+        self.assertEqual(lines[-1], "Unrecovered drops: 2")
+        self.assertEqual(lines[0], "Log span: 10:00:00 to 10:05:00")
+
+    def test_reconnects_exceed_drops_is_not_negative(self):
+        s = {"connects": 0, "drops": 0, "reconnects": 3, "refusals": 0,
+             "disconnects": 0, "first": None, "last": None, "lines": 0}
+        self.assertEqual(
+            soak_report.format_summary(s).splitlines()[-1],
+            "Unrecovered drops: 0")
+
+
 if __name__ == "__main__":
     unittest.main()

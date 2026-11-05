@@ -46,3 +46,21 @@ def summarize(text: str) -> dict:
             result["first"] = time
         result["last"] = time
     return result
+
+
+def format_summary(s: dict) -> str:
+    """Plain-text block for a summarize() result, one 'Label: value' per line."""
+    if s["first"] is None:
+        span = "Log span: none"
+    else:
+        span = f"Log span: {s['first']} to {s['last']}"
+    lines = [
+        span,
+        f"Connects: {s['connects']}",
+        f"Drops: {s['drops']}",
+        f"Reconnects: {s['reconnects']}",
+        f"Refusals: {s['refusals']}",
+        f"Disconnects: {s['disconnects']}",
+        f"Unrecovered drops: {max(s['drops'] - s['reconnects'], 0)}",
+    ]
+    return "\n".join(lines)
