@@ -43,6 +43,7 @@ import customtkinter as ctk
 from adb_manager import ADBManager
 from tether_manager import TetherManager, TetherState, TetherStats, temperature_zone
 import qt_platform
+import qtetherd
 
 # System tray — graceful degradation if not installed
 try:
@@ -103,6 +104,28 @@ def format_uptime(seconds: float) -> str:
     hours, remainder = divmod(td.seconds + td.days * 86400, 3600)
     minutes, secs = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def stats_from_status(status: dict) -> TetherStats:
+    """Turn a qtetherd status reply into the stats object the window draws."""
+    try:
+        state = TetherState(status.get("state", ""))
+    except ValueError:
+        state = TetherState.IDLE
+    return TetherStats(
+        state=state,
+        uptime_seconds=float(status.get("uptime_s") or 0.0),
+        rx_rate_bps=float(status.get("rx_bps") or 0.0),
+        tx_rate_bps=float(status.get("tx_bps") or 0.0),
+        reconnect_count=int(status.get("reconnects") or 0),
+        battery_level=status.get("battery_level") or "",
+        battery_temp_c=status.get("temp_c"),
+        last_error=status.get("error") or "",
+        device_serial=status.get("device_serial") or "",
+        device_model=status.get("device_model") or "",
+        vpn_ip=status.get("vpn_ip") or "",
+        battery_status=status.get("battery_status") or "",
+    )
 
 
 STATE_LABELS = {
@@ -341,14 +364,24 @@ class QuestTetherApp(ctk.CTk):
         if os.path.isfile(icon_path):
             self.iconbitmap(icon_path)
 
-        # --- Core Managers ---
-        self.adb = ADBManager()
-        self.tether = TetherManager(self.adb)
-        self.tether.set_callbacks(
-            on_state_change=self._on_state_change,
-            on_stats_update=self._on_stats_update,
-            on_log=self._on_log,
-        )
+        # --- Core: service client on Linux, in-process everywhere else ---
+        self.adb = None
+        self.tether = None
+        self._service_mode = False
+        self._last_status = {}
+        self._service_refused = False
+        self._status_in_flight = False
+        if qt_platform.current().uses_tether_service():
+            self._last_status = self._probe_service()
+            self._service_mode = bool(self._last_status)
+        if not self._service_mode:
+            self.adb = ADBManager()
+            self.tether = TetherManager(self.adb)
+            self.tether.set_callbacks(
+                on_state_change=self._on_state_change,
+                on_stats_update=self._on_stats_update,
+                on_log=self._on_log,
+            )
 
         self._connected = False
         self._quitting = False
@@ -359,11 +392,12 @@ class QuestTetherApp(ctk.CTk):
         # --- Build UI ---
         self._build_ui()
 
-        # --- Start device monitoring ---
-        self.adb.start_monitoring(
-            on_connected=self._on_device_connected,
-            on_disconnected=self._on_device_disconnected,
-        )
+        # --- Start device monitoring (the service does this on Linux) ---
+        if not self._service_mode:
+            self.adb.start_monitoring(
+                on_connected=self._on_device_connected,
+                on_disconnected=self._on_device_disconnected,
+            )
 
         # Initial state check
         self.after(500, self._initial_check)
@@ -385,6 +419,109 @@ class QuestTetherApp(ctk.CTk):
 
         # Minimize button → also go to tray
         self.bind("<Unmap>", self._on_minimize)
+
+    def _probe_service(self):
+        """The service's status reply, or None when qtetherd did not answer.
+
+        `_service_refused` says whether the port was actively refused (no
+        service) or merely slow/busy; only a refusal justifies falling back.
+        """
+        self._service_refused = False
+        try:
+            reply = qtetherd.request({"cmd": "status"}, timeout=1.0)
+        except ConnectionRefusedError:
+            self._service_refused = True
+            return None
+        except (OSError, ValueError):
+            return None
+        if isinstance(reply, dict) and isinstance(reply.get("state"), str):
+            return reply
+        return None
+
+    def _service_request(self, cmd: dict, timeout: float = 5.0, quiet: bool = False):
+        """Send one request to qtetherd; None (and optionally a log line) on failure."""
+        try:
+            return qtetherd.request(cmd, timeout=timeout)
+        except (OSError, ValueError) as exc:
+            if not quiet:
+                message = f"qtetherd service not reachable: {exc}"
+                self.after(0, lambda: self._log_panel.append(message))
+            return None
+
+    def _fall_back_to_process(self):
+        """Take the core over in this window after qtetherd stops answering."""
+        self._service_mode = False
+        if self.tether is not None:
+            return
+        self.adb = ADBManager()
+        self.tether = TetherManager(self.adb)
+        self.tether.set_callbacks(
+            on_state_change=self._on_state_change,
+            on_stats_update=self._on_stats_update,
+            on_log=self._on_log,
+        )
+        self.adb.start_monitoring(
+            on_connected=self._on_device_connected,
+            on_disconnected=self._on_device_disconnected,
+        )
+        self._log_panel.append("qtetherd stopped; running in-process")
+
+    def _reprobe_service(self) -> bool:
+        """True while qtetherd still answers, else fall back to the core here."""
+        if not self._service_mode:
+            return False
+        status = self._probe_service()
+        if status:
+            self._apply_service_status(status)
+            return True
+        if not getattr(self, "_service_refused", False):
+            # The service is still there, just busy (for example mid-connect).
+            # Keep using it; only a refused connection means it is gone.
+            return True
+        self._fall_back_to_process()
+        return False
+
+    def _apply_service_status(self, status: dict):
+        """Show a service status reply through the same callbacks as the core."""
+        if not status:
+            return
+        self._last_status = status
+        stats = stats_from_status(status)
+        self._on_state_change(stats.state, stats)
+        self._on_stats_update(stats)
+
+    def _push_setting(self, key: str, value):
+        """Persist a setting through qtetherd when the service owns the core."""
+        if not self._service_mode:
+            return False
+
+        def send():
+            if not self._reprobe_service():
+                return
+            answer = self._service_request(
+                {"cmd": "settings-set", "settings": {key: value}}, timeout=5.0
+            )
+            if answer and not answer.get("ok", False):
+                message = answer.get("error") or "settings change failed"
+                self.after(0, lambda: self._log_panel.append(message))
+
+        threading.Thread(target=send, daemon=True).start()
+        return True
+
+    def _run_service_command(self, cmd: dict, timeout: float = 90.0):
+        """Run connect/disconnect in the service, then show the fresh status."""
+        answer = self._service_request(cmd, timeout=timeout)
+        try:
+            if answer is None:
+                return
+            if not answer.get("ok", False):
+                message = answer.get("error") or "request failed"
+                self.after(0, lambda: self._log_panel.append(message))
+            self._apply_service_status(
+                self._service_request({"cmd": "status"}, timeout=3.0, quiet=True)
+            )
+        finally:
+            self.after(0, lambda: self._connect_btn.configure(state="normal"))
 
     def _build_ui(self):
         """Construct the main interface."""
@@ -541,6 +678,14 @@ class QuestTetherApp(ctk.CTk):
 
     def _initial_check(self):
         """Run initial system checks."""
+        if self._service_mode:
+            self._adb_status.configure(
+                text="Service: OK", text_color=COLORS["accent_green"]
+            )
+            self._log_panel.append("Using the qtetherd service")
+            self._apply_service_status(self._last_status)
+            return
+
         if self.adb.is_adb_available():
             self._adb_status.configure(
                 text="ADB: OK", text_color=COLORS["accent_green"]
@@ -725,6 +870,9 @@ class QuestTetherApp(ctk.CTk):
     def _do_connect(self):
         if self._quitting:
             return
+        if self._service_mode and self._reprobe_service():
+            self._run_service_command({"cmd": "connect"})
+            return
         quest = self.adb.find_quest()
         if not quest:
             self.after(
@@ -744,6 +892,9 @@ class QuestTetherApp(ctk.CTk):
         self.tether.connect(quest["serial"])
 
     def _do_disconnect(self):
+        if self._service_mode and self._reprobe_service():
+            self._run_service_command({"cmd": "disconnect"})
+            return
         self.tether.disconnect()
 
     def _toggle_auto_connect(self):
@@ -752,30 +903,66 @@ class QuestTetherApp(ctk.CTk):
         self._log_panel.append(f"Auto-connect {state}")
 
     def _toggle_auto_reconnect(self):
-        self.tether.auto_reconnect = self._auto_reconnect_var.get()
+        self._push_setting("auto_reconnect", self._auto_reconnect_var.get())
+        if not self._service_mode:
+            self.tether.auto_reconnect = self._auto_reconnect_var.get()
         state = "on" if self._auto_reconnect_var.get() else "off"
         self._log_panel.append(f"Auto-reconnect {state}")
 
     def _toggle_crash_reports(self):
         enabled = self._crash_reports_var.get()
         crash_report.set_enabled(enabled)
+        self._push_setting("crash_reports", enabled)
         state = "on" if enabled else "off"
         self._log_panel.append(f"Send crash reports automatically {state}")
 
     def _on_wifi_mode(self, label: str):
         mode = self._wifi_labels[label]
-        self.tether.wifi_mode = mode
+        self._push_setting("wifi_mode", mode)
+        if not self._service_mode:
+            self.tether.wifi_mode = mode
         self._log_panel.append(f"Headset Wi-Fi policy: {mode}")
-        if self._connected:
+        if self._connected and not self._service_mode:
             threading.Thread(
                 target=self.tether._apply_wifi_policy,
                 args=(self.tether.stats.device_serial,),
                 daemon=True,
             ).start()
 
+    def _fetch_service_status(self):
+        """Worker-thread status poll; the answer is shown on the Tk thread."""
+        reply = self._service_request({"cmd": "status"}, timeout=1.0, quiet=True)
+        self.after(0, lambda: self._show_service_status(reply))
+
+    def _show_service_status(self, reply):
+        """Apply a status poll result on the Tk thread."""
+        self._status_in_flight = False
+        if self._quitting:
+            return
+        if reply:
+            self._adb_status.configure(
+                text="Service: OK", text_color=COLORS["accent_green"]
+            )
+            self._apply_service_status(reply)
+        else:
+            self._adb_status.configure(
+                text="Service: Down", text_color=COLORS["error"]
+            )
+
     def _ui_refresh_loop(self):
         """1-second UI refresh."""
         if self._quitting:
+            return
+
+        if self._service_mode:
+            # Never block the Tk thread on the socket: poll from a worker and
+            # post the result back with after().
+            if not self._status_in_flight:
+                self._status_in_flight = True
+                threading.Thread(target=self._fetch_service_status, daemon=True).start()
+            if HAS_TRAY:
+                self._update_tray()
+            self._ui_refresh_id = self.after(1000, self._ui_refresh_loop)
             return
 
         if self._connected and self.tether._start_time:
@@ -861,6 +1048,16 @@ class QuestTetherApp(ctk.CTk):
     def _update_tray(self):
         if not self._tray_icon:
             return
+        if self._service_mode:
+            stats = stats_from_status(self._last_status)
+            if self._connected:
+                rx = format_rate(stats.rx_rate_bps)
+                tx = format_rate(stats.tx_rate_bps)
+                up = format_uptime(stats.uptime_seconds)
+                self._tray_icon.title = f"Quest Tether\n\u2193{rx} \u2191{tx} | {up}"
+            else:
+                self._tray_icon.title = "Quest Tether - Idle"
+            return
         if self._connected and self.tether._start_time:
             uptime = time.time() - self.tether._start_time
             rx = format_rate(self.tether.stats.rx_rate_bps)
@@ -893,30 +1090,32 @@ class QuestTetherApp(ctk.CTk):
 
         # Disable auto-connect FIRST — prevents zombie restart
         self._auto_connect_enabled = False
-        self.tether._running = False
-        self.tether.auto_reconnect = False
+        if not self._service_mode:
+            self.tether._running = False
+            self.tether.auto_reconnect = False
 
-        # Stop monitoring BEFORE killing process — prevents race condition
-        # where monitor sees device after kill and triggers auto-connect
-        self.adb.stop_monitoring()
+            # Stop monitoring BEFORE killing process — prevents race condition
+            # where monitor sees device after kill and triggers auto-connect
+            self.adb.stop_monitoring()
 
         # Cancel UI refresh
         if self._ui_refresh_id:
             self.after_cancel(self._ui_refresh_id)
             self._ui_refresh_id = None
 
-        # If connected, clean up the Quest before killing Java
-        serial = self.tether.stats.device_serial
-        if self._connected and serial:
-            self.adb.stop_gnirehtet_client(serial)
-            self.adb.force_stop_gnirehtet(serial)
-            self.adb.toggle_wifi(serial, wait_seconds=2.0)
+        if not self._service_mode:
+            # If connected, clean up the Quest before killing Java
+            serial = self.tether.stats.device_serial
+            if self._connected and serial:
+                self.adb.stop_gnirehtet_client(serial)
+                self.adb.force_stop_gnirehtet(serial)
+                self.adb.toggle_wifi(serial, wait_seconds=2.0)
 
-        # Kill tracked Java process
-        self.tether.force_kill()
+            # Kill tracked Java process
+            self.tether.force_kill()
 
-        # Kill ANY untracked gnirehtet on port 31416 (race condition safety net)
-        self.tether._kill_stale_process()
+            # Kill ANY untracked gnirehtet on port 31416 (race condition safety net)
+            self.tether._kill_stale_process()
 
         # Stop tray icon
         if self._tray_icon:
@@ -937,9 +1136,14 @@ _app_instance = None
 
 def _atexit_cleanup():
     """Safety net: kill relay process if app dies unexpectedly."""
-    if _app_instance and _app_instance.tether._process:
+    tether = (
+        getattr(_app_instance, "tether", None)
+        if _app_instance and not getattr(_app_instance, "_service_mode", False)
+        else None
+    )
+    if tether and tether._process:
         try:
-            _app_instance.tether.force_kill()
+            tether.force_kill()
         except Exception:
             pass
 

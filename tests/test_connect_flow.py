@@ -50,6 +50,25 @@ class ConnectFlowTests(unittest.TestCase):
         self.assertEqual(manager.stats.state, TetherState.CONNECTED)
 
     @patch("tether_manager.time.sleep", return_value=None)
+    def test_connect_while_connected_starts_no_second_relay(self, _sleep):
+        manager = self.make_manager([])
+        manager._set_state(TetherState.CONNECTED)
+
+        self.assertTrue(manager.connect("quest-serial"))
+
+        manager._spawn_relay.assert_not_called()
+        manager._kill_stale_process.assert_not_called()
+
+    @patch("tether_manager.time.sleep", return_value=None)
+    def test_connect_while_starting_starts_no_second_relay(self, _sleep):
+        manager = self.make_manager([])
+        manager._set_state(TetherState.STARTING)
+
+        self.assertTrue(manager.connect("quest-serial"))
+
+        manager._spawn_relay.assert_not_called()
+
+    @patch("tether_manager.time.sleep", return_value=None)
     def test_health_loop_promotes_only_after_tunnel_appears(self, _sleep):
         adb = Mock()
         adb.get_tun0_stats.side_effect = [None, None, {"rx_bytes": 1, "tx_bytes": 2}]

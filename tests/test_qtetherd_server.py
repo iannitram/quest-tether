@@ -1,4 +1,5 @@
 """qtetherd JSON-lines server and client over loopback (no headset): python -m unittest discover -s tests"""
+
 import json
 import socket
 import os
@@ -19,6 +20,7 @@ def start(handler):
         server.shutdown()
         server.server_close()
         t.join(5)
+
     return server, stop
 
 
@@ -35,6 +37,7 @@ class RoundTrip(unittest.TestCase):
         def handler(req):
             self.seen.append(req)
             return {"state": "connected", "echo": req}
+
         self.server, stop = start(handler)
         self.addCleanup(stop)
         self.port = self.server.server_address[1]
@@ -47,16 +50,37 @@ class RoundTrip(unittest.TestCase):
     def test_the_wire_format_is_one_json_line_each_way(self):
         line = raw(self.port, b'{"cmd": "connect"}\n')
         self.assertTrue(line.endswith(b"\n"))
-        self.assertEqual(json.loads(line), {"state": "connected", "echo": {"cmd": "connect"}})
+        self.assertEqual(
+            json.loads(line), {"state": "connected", "echo": {"cmd": "connect"}}
+        )
 
     def test_several_requests_in_a_row(self):
         for cmd in ("status", "connect", "disconnect"):
             qtetherd.request({"cmd": cmd}, "127.0.0.1", self.port)
-        self.assertEqual([r["cmd"] for r in self.seen], ["status", "connect", "disconnect"])
+        self.assertEqual(
+            [r["cmd"] for r in self.seen], ["status", "connect", "disconnect"]
+        )
 
     def test_bad_json_is_answered_without_calling_the_handler(self):
-        self.assertEqual(json.loads(raw(self.port, b"not json\n")), {"ok": False, "error": "bad request"})
+        self.assertEqual(
+            json.loads(raw(self.port, b"not json\n")),
+            {"ok": False, "error": "bad request"},
+        )
         self.assertEqual(self.seen, [])
+
+    def test_non_object_json_is_answered_without_calling_the_handler(self):
+        for body in (b"[]\n", b'"status"\n', b"5\n", b"null\n"):
+            self.assertEqual(
+                json.loads(raw(self.port, body)),
+                {"ok": False, "error": "bad request"},
+                body,
+            )
+        self.assertEqual(self.seen, [])
+
+
+class HandlerTimeout(unittest.TestCase):
+    def test_handler_timeout_is_ten_seconds(self):
+        self.assertEqual(qtetherd.HANDLER_TIMEOUT, 10)
 
 
 class HandlerFailure(unittest.TestCase):
@@ -68,11 +92,17 @@ class HandlerFailure(unittest.TestCase):
             if len(calls) == 1:
                 raise RuntimeError("boom")
             return {"ok": True}
+
         server, stop = start(handler)
         self.addCleanup(stop)
         port = server.server_address[1]
-        self.assertEqual(qtetherd.request({"cmd": "x"}, "127.0.0.1", port), {"ok": False, "error": "internal error"})
-        self.assertEqual(qtetherd.request({"cmd": "x"}, "127.0.0.1", port), {"ok": True})
+        self.assertEqual(
+            qtetherd.request({"cmd": "x"}, "127.0.0.1", port),
+            {"ok": False, "error": "internal error"},
+        )
+        self.assertEqual(
+            qtetherd.request({"cmd": "x"}, "127.0.0.1", port), {"ok": True}
+        )
 
 
 class Binding(unittest.TestCase):
@@ -112,7 +142,9 @@ class ClientErrors(unittest.TestCase):
         self.addCleanup(srv.close)
         threading.Thread(target=lambda: srv.accept()[0].close(), daemon=True).start()
         with self.assertRaises(OSError):
-            qtetherd.request({"cmd": "status"}, "127.0.0.1", srv.getsockname()[1], timeout=2)
+            qtetherd.request(
+                {"cmd": "status"}, "127.0.0.1", srv.getsockname()[1], timeout=2
+            )
 
 
 if __name__ == "__main__":
