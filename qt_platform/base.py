@@ -69,3 +69,11 @@ class Platform:
     def set_autostart(self, on: bool) -> bool:
         """Turn start-at-login on or off; returns the new state."""
         raise NotImplementedError
+
+    def service(self, action: str) -> dict:
+        """Status, start or stop the tether service.
+
+        Returns {"ok": bool, "running": bool, "detail": str}; Windows has no
+        service and answers {"ok": False, "error": "no service on Windows"}.
+        """
+        raise NotImplementedError

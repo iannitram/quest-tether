@@ -13,13 +13,15 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `net_sync.py` | Copy the PC's Wi-Fi network to the headset: PC SSID, key and security from the platform layer, then `cmd wifi` on the headset. | present (platform-backed) | M5, M7 |
 | `main.py` | The desktop window (CustomTkinter), dashboard, log panel, tray (pystray + Pillow), single-instance guard (through the platform layer), `--minimized`. On Linux it is a `qtetherd` client when the service answers; with no service it runs the core in-process as before. Windows always runs in-process. | present | M4, M6 |
 | `qt_platform/` | **New.** The platform layer: everything that differs by OS behind one interface (`base.py`: the `Platform` class), with `windows.py` (`WindowsPlatform`) and `linux.py` (`LinuxPlatform`); `current()` in `__init__.py` picks one (Windows, Linux, else `RuntimeError`). Callers in `adb_manager.py`, `tether_manager.py`, `net_sync.py` and `main.py` use it. | present on both OSes | M6, M7 |
-| `qtetherd.py` | **New.** Linux user service that owns the one tether (core in-process) and answers JSON requests on `127.0.0.1:31417` (status, connect, disconnect, wifi-sync, logs, settings-get / settings-set; the relay's own port is 31416). `serve()` builds the one `ADBManager` + `TetherManager`, and a second copy on the port prints one line and exits 1. Clients: the desktop window on Linux, the Decky plugin, the CLI (planned). | present | M7, M8 |
+| `qtetherd.py` | **New.** Linux user service that owns the one tether (core in-process) and answers JSON requests on `127.0.0.1:31417` (status, connect, disconnect, wifi-sync, logs, settings-get / settings-set; the relay's own port is 31416). `serve()` builds the one `ADBManager` + `TetherManager`, and a second copy on the port prints one line and exits 1. Clients: the desktop window on Linux, the Decky plugin and the CLI. | present | M7, M8 |
 | `decky/` | **New.** The Decky Loader plugin: `plugin.json`, a Python backend (`main.py`) that is a client of `qtetherd`, and the Quick Access panel (`src/index.tsx`) with the `decky-plugin-template` build config (`package.json`, `rollup.config.js`, `tsconfig.json`). | panel built; backend stub | M8 |
 | `build.spec`, `build.bat` | PyInstaller one-file EXE (Windows). Linux packaging joins it (#10 and the Linux package issue). | present | M9 |
 | `tools/` | Third-party binaries at run time (adb, relay, headset APK). Supplied by the package, never committed (#11). Four are still tracked: `AdbWinApi.dll`, `AdbWinUsbApi.dll`, `gnirehtet.jar`, `gnirehtet.apk`. | to clean (#11) | M9 |
 | `tests/` | **New.** Unit tests that need no headset (platform selection, temperature zones, parsing). `test_platform.py` (platform selection) is there; the rest arrive with their issues (#4, #17, #19, ...). CI runs them with `python -m unittest discover -s tests`. | present (1 file) | all |
 | `am_result.py` | **New.** Pure parser: the first `Error` line of an `am start` reply (#63). | new | - |
 | `cli_format.py` | **New.** Pure text for the CLI: rates, uptime, status block, exit codes (#74). | new | - |
+| `cli.py` | **New.** The `quest-tether` argparse entry point (`python -m cli` or the packaged binary): one subcommand per feature, `--json` on every command, text through `cli_format`, exit codes 0/1/2 (#74). | new | - |
+| `cli_commands.py` | **New.** The command layer: pure-ish functions returning dicts, one per CLI command. A `Backend` picks qtetherd (`ServiceBackend`) when it answers, else the in-process `TetherManager` (`LocalBackend`); doctor, install-apk, crash-queue, service and gui complete the set (#74). | new | - |
 | `heal_policy.py` | **New.** Pure awake-gated liveness policy: wakefulness parse, restart backoff, `Liveness` transitions (#65). | new | - |
 | `vpn_state.py` | **New.** Pure parser: the gnirehtet VPN agent's state from `dumpsys connectivity`, for a verified "VPN closed" (#64). | new | - |
 
@@ -36,6 +38,7 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `single_instance(name)` | named mutex `Local\QuestTetherSingleInstance` (today's code) | a lock file in `data_dir()` (`fcntl.flock`) |
 | `uses_tether_service()` | `False` (the window runs the core) | `True` (the window is a `qtetherd` client) |
 | `autostart()` / `set_autostart(on)` | `HKCU\...\Run` value with `--minimized` | `~/.config/autostart/quest-tether.desktop` with `--minimized` |
+| `service(action)` | `{"ok": False, "error": "no service on Windows"}` | `systemctl --user <action> quest-tether.service` (the unit that runs `qtetherd`) |
 
 Callers stop testing `os.name` and call `qt_platform.current()`.
 

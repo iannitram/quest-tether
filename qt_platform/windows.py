@@ -293,3 +293,7 @@ class WindowsPlatform(Platform):
             except FileNotFoundError:
                 pass
         return self.autostart()
+
+    def service(self, action: str) -> dict:
+        # Windows runs the tether in the app, so there is no service to manage.
+        return {"ok": False, "error": "no service on Windows"}

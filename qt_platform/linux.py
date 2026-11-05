@@ -25,6 +25,8 @@ from .linux_parse import (
 
 log = logging.getLogger(__name__)
 
+SERVICE_UNIT = "quest-tether.service"
+
 _lock_handle = (
     None  # the single-instance lock file, kept open for the life of the process
 )
@@ -37,6 +39,15 @@ def _run(args: List[str], timeout: float = 8) -> str:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return ""
     return done.stdout if done.returncode == 0 else ""
+
+
+def _systemctl(*args: str, timeout: float = 15) -> subprocess.CompletedProcess:
+    """Run one systemctl --user command; a missing systemctl becomes a failed run."""
+    cmd = ["systemctl", "--user"] + list(args)
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        return subprocess.CompletedProcess(cmd, 1, "", str(exc))
 
 
 def _read_cmdline(pid: int) -> str:
@@ -191,3 +202,33 @@ class LinuxPlatform(Platform):
             except FileNotFoundError:
                 pass
         return self.autostart()
+
+    def service(self, action: str) -> dict:
+        """Run a systemctl --user action on the tether unit (the qtetherd service)."""
+        if action not in ("status", "start", "stop"):
+            return {"ok": False, "error": "bad service action: " + str(action)}
+        if action in ("start", "stop"):
+            result = _systemctl(action, SERVICE_UNIT)
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "").strip()
+                return {
+                    "ok": False,
+                    "action": action,
+                    "running": None,
+                    "detail": detail or "systemctl %s failed" % action,
+                }
+        state = _systemctl("is-active", SERVICE_UNIT)
+        detail = (state.stdout or "").strip()
+        if not detail:
+            return {
+                "ok": False,
+                "action": action,
+                "running": False,
+                "detail": (state.stderr or "").strip() or "systemctl is-active failed",
+            }
+        return {
+            "ok": True,
+            "action": action,
+            "running": detail == "active",
+            "detail": detail,
+        }
