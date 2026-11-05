@@ -685,7 +685,7 @@ class ConnectHold(unittest.TestCase):
                 with redirect_stdout(out), redirect_stderr(err):
                     code = cli.main(["connect", "--hold", "--json"])
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out.getvalue().splitlines()[0]), {"ok": True})
+        self.assertEqual(json.loads(out.getvalue()), {"ok": True})
         self.assertIn("Holding the tether", err.getvalue())
         self.assertIn(("disconnect",), env.tether.calls)
 
@@ -798,7 +798,14 @@ class EntryPoint(unittest.TestCase):
     def test_crash_queue_json(self):
         code, out, _ = self._run(["crash-queue", "--json"], self.StubBackend())
         self.assertEqual(code, 0)
-        self.assertTrue(json.loads(out)["ok"])
+        payload = json.loads(out)
+        self.assertTrue(payload["ok"])
+        self.assertNotIn("sent", payload)
+
+    def test_crash_queue_text_without_flush(self):
+        code, out, _ = self._run(["crash-queue"], self.StubBackend())
+        self.assertEqual(code, 0)
+        self.assertNotIn("Retried", out)
 
     def test_settings_get_json(self):
         code, out, _ = self._run(["settings", "get", "--json"], self.StubBackend())

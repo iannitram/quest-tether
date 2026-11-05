@@ -101,7 +101,9 @@ class FormatStatus(unittest.TestCase):
 
     def test_battery_level_with_percent_sign(self):
         status = {"state": "connected", "battery_level": "81%"}
-        self.assertIn("Battery:    81%", cli_format.format_status(status))
+        out = cli_format.format_status(status)
+        self.assertIn("Battery:    81%\n", out)
+        self.assertNotIn("81%%", out)
 
     def test_error_without_zone(self):
         status = {"state": "error", "battery_level": 50, "temp_c": 40,
