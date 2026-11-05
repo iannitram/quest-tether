@@ -260,8 +260,12 @@ def make_server(
     return Server((host, port), Handler)
 
 
-def serve(host: str = HOST, port: int = PORT) -> None:
-    """Run the service until stopped."""
+def setup_logging() -> str:
+    """Send logs to the console and qtetherd.log in the data folder; return the log path.
+
+    Called only when the service runs as a program, never from serve(), so tests
+    that call serve() leave the real log and the root logger alone (#85).
+    """
     log_path = os.path.join(crash_report.data_dir(), "qtetherd.log")
     try:
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -273,8 +277,11 @@ def serve(host: str = HOST, port: int = PORT) -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[logging.StreamHandler(), handler],
     )
-    crash_report.install(log_path=log_path)
+    return log_path
 
+
+def serve(host: str = HOST, port: int = PORT) -> None:
+    """Run the service until stopped."""
     adb = ADBManager()
     tether = TetherManager(adb)
     # Bind before touching the headset: a second copy must exit without
@@ -305,4 +312,5 @@ def request(
 
 
 if __name__ == "__main__":
+    crash_report.install(log_path=setup_logging())
     serve()

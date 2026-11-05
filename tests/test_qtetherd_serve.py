@@ -27,6 +27,19 @@ class Serve(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
+    def test_serve_leaves_logging_alone(self):
+        """serve() must not open a log file or configure the root logger (#85)."""
+        with (
+            patch("qtetherd.ADBManager"),
+            patch("qtetherd.TetherManager"),
+            patch("qtetherd.make_server"),
+            patch("qtetherd.logging.FileHandler") as file_handler,
+        ):
+            qtetherd.serve()
+        file_handler.assert_not_called()
+        qtetherd.logging.basicConfig.assert_not_called()
+        qtetherd.crash_report.install.assert_not_called()
+
     def test_builds_one_core_and_serves_requests(self):
         adb = Mock()
         adb.find_serial = Mock(return_value="SERIAL")
