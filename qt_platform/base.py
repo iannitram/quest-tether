@@ -58,6 +58,10 @@ class Platform:
         """True if this is the only running copy; held for the life of the process."""
         raise NotImplementedError
 
+    def uses_tether_service(self) -> bool:
+        """True when a separate service owns the tether core and the window is only a client."""
+        return False
+
     def autostart(self) -> bool:
         """True if the app starts (minimized) at login."""
         raise NotImplementedError
