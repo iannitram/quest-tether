@@ -24,6 +24,7 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `cli.py` | The `quest-tether` argparse entry point (`python cli.py`; the packaged binary is not built yet, #74): one subcommand per feature, `--json` on every command, exit codes 0/1/2 (#74, #88). | merged; device check and packaging open (#74) | - |
 | `cli_commands.py` | The command layer: functions returning dicts, one per CLI command. `make_backend` picks qtetherd (`ServiceBackend`) when it answers, else the in-process `TetherManager` (`LocalBackend`); plus doctor, install-apk, crash-queue, service and gui. The MCP server (#75) will reuse it. | merged | - |
 | `cli_format.py` | Pure text for the CLI: rates, uptime, status block, exit codes (#81). | wired (`cli.py`) | - |
+| `mcp_server.py` | Not built yet. The MCP server (#75): `quest-tether mcp`, a local stdio server whose tools mirror `cli_commands`, with read tools and write tools that need `confirm`. | not started (#75) | - |
 | `qt_platform/` | The platform layer: everything that differs by OS behind one interface (`base.py`: `Platform`), with `windows.py` (`WindowsPlatform`) and `linux.py` (`LinuxPlatform`), plus Linux pure helpers `linux_parse.py` (nmcli, `ss`, `/proc` cmdline) and `linux_paths.py` (XDG paths, relay command, autostart entry). `current()` in `__init__.py` picks one (Windows, Linux, else `RuntimeError`). Every caller uses it (#13, #14 children #31-#34, #15). | wired on both OSes | M6, M7 |
 | `decky/` | The Decky Loader plugin: `plugin.json`, the backend `main.py` (forwards `status`, `connect`, `disconnect` to `qtetherd`; `service-down` when it gets no answer, #19) and the Quick Access panel `src/index.tsx` (state, temperature dot, Connect / Disconnect, #20) with the `decky-plugin-template` build (`package.json`, `rollup.config.js`, `tsconfig.json`). | built; Game Mode check open (M8) | M8 |
 | `packaging/linux/` | `install.sh` / `uninstall.sh` (one visible sudo prompt, only for the udev rule, #39), `quest-tether.service` (systemd user unit running `qtetherd`, #37), `51-quest-tether.rules` (udev, vendor `2833`, #17). | scripts in; nothing builds the binaries or the tar.gz they install yet (#21) | M7, M9 |
@@ -65,6 +66,8 @@ flowchart LR
   end
   CLI[cli.py + cli_commands.py] -->|service answers| D
   CLI -->|no service| CoreW
+  CLI -->|no service| CoreL
+  MCP[mcp_server.py, not built yet] -.->|planned| CLI
   CoreW --> P[qt_platform.current()]
   CoreL --> P
   CoreW --> Sync[net_sync.py] --> P
