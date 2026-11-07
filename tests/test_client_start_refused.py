@@ -27,7 +27,8 @@ def make_manager():
     process = Mock()
     process.pid = 123
     process.poll.return_value = None
-    manager._process = process
+    # The spawn hands over the relay; connect() kills one already running (#107).
+    manager._spawn_relay.side_effect = lambda serial: setattr(manager, "_process", process)
     logs = []
     manager.set_callbacks(on_log=logs.append)
     return manager, logs

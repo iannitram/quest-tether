@@ -234,6 +234,11 @@ def _monitor_callbacks(tether):
             if not tether.auto_reconnect or not serial:
                 return
             if device_info.get("status", "device") != "device":
+                # The monitor fires again once the prompt is accepted (#109).
+                if device_info.get("_unauthorized"):
+                    tether.note_usb_event(
+                        "Headset unauthorized — accept the USB debugging prompt"
+                    )
                 return
             state = tether.stats.state
             if state in ACTIVE_CONNECT_STATES:

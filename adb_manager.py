@@ -91,6 +91,7 @@ class ADBManager:
         self._on_device_connected: Optional[Callable] = None
         self._on_device_disconnected: Optional[Callable] = None
         self._current_serial: Optional[str] = None
+        self._current_status: Optional[str] = None
         # The Error line of the last `am start` reply, if Android refused it.
         self.last_client_error: Optional[str] = None
         # The exit code of that same call, for failures with no Error line.
@@ -436,23 +437,31 @@ class ADBManager:
     def _monitor_loop(self, interval: float):
         while self._monitoring:
             try:
-                quest = self.find_quest()
-                if quest and quest.get("status") == "device":
-                    if self._current_serial != quest["serial"]:
-                        self._current_serial = quest["serial"]
-                        if self._on_device_connected:
-                            self._on_device_connected(quest)
-                elif quest and quest.get("status") == "unauthorized":
-                    if self._current_serial != quest["serial"]:
-                        self._current_serial = quest["serial"]
-                        quest["_unauthorized"] = True
-                        if self._on_device_connected:
-                            self._on_device_connected(quest)
-                else:
-                    if self._current_serial is not None:
-                        self._current_serial = None
-                        if self._on_device_disconnected:
-                            self._on_device_disconnected()
+                self._monitor_step()
             except Exception:
                 pass
             time.sleep(interval)
+
+    def _monitor_step(self):
+        """One USB poll. Fires on_connected for a new serial, and once more
+        when a known serial goes from unauthorized to device: accepting the
+        USB debugging prompt keeps the serial (#109). A known serial going
+        back to unauthorized fires nothing, as before."""
+        quest = self.find_quest()
+        status = quest.get("status") if quest else None
+        if status in ("device", "unauthorized"):
+            new_serial = self._current_serial != quest["serial"]
+            now_authorized = status == "device" and self._current_status != "device"
+            self._current_serial = quest["serial"]
+            self._current_status = status
+            if not (new_serial or now_authorized):
+                return
+            if status == "unauthorized":
+                quest["_unauthorized"] = True
+            if self._on_device_connected:
+                self._on_device_connected(quest)
+        elif self._current_serial is not None:
+            self._current_serial = None
+            self._current_status = None
+            if self._on_device_disconnected:
+                self._on_device_disconnected()

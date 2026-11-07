@@ -35,7 +35,10 @@ class FakeClock:
 class LivenessHarness(unittest.TestCase):
     def setUp(self):
         self.clock = FakeClock()
+        # monotonic too: the VPN-close wait sleeps to a monotonic deadline, and a
+        # real remainder fed to the fake sleep made the clock drift (CI flake).
         for target, fake in (("tether_manager.time.time", self.clock.time),
+                             ("tether_manager.time.monotonic", self.clock.time),
                              ("tether_manager.time.sleep", self.clock.sleep)):
             patcher = patch(target, fake)
             patcher.start()
@@ -406,7 +409,14 @@ class ConnectResetsLiveness(LivenessHarness):
         self.manager.relay_mode = "run"
         self.manager.restore_wifi_if_flagged = Mock()
         self.manager._kill_stale_process = Mock()
-        self.manager._start_run_relay = Mock(return_value=True)
+        relay = self.manager._process
+        self.manager._process = None  # the last session's relay is gone (#107)
+
+        def start_run_relay(serial):
+            self.manager._process = relay
+            return True
+
+        self.manager._start_run_relay = Mock(side_effect=start_run_relay)
         self.manager._apply_wifi_policy = Mock()
         self.manager._start_health_monitor = Mock()
         self.adb.is_vpn_up.return_value = True
