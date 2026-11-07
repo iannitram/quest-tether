@@ -20,6 +20,7 @@ def make_manager():
     manager = TetherManager(adb, gnirehtet_path="fake.jar")
     manager._kill_stale_process = Mock()
     manager._spawn_relay = Mock()
+    manager.relay_mode = "run"  # these tests cover the run-mode spawn; split is in test_split_relay.py
     manager.restore_wifi_if_flagged = Mock()
     manager._apply_wifi_policy = Mock()
     manager._start_health_monitor = Mock()
@@ -70,6 +71,7 @@ class ClientStartRefused(unittest.TestCase):
         manager._kill_process = Mock()
         manager._kill_stale_process = Mock()
         manager._spawn_relay = Mock()
+        manager.relay_mode = "run"
         manager._process = Mock(pid=123)
         polls_at_refusal = []
 

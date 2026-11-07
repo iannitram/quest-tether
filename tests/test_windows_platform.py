@@ -91,6 +91,21 @@ class RelayCommand(unittest.TestCase):
             ],
         )
 
+    def test_relay_server_command_is_java_jar_relay_on_the_port(self):
+        with mock.patch.object(WindowsPlatform, "_find_java", return_value="java"):
+            cmd = WindowsPlatform().relay_server_command("C:\\tools", 31416)
+        self.assertEqual(
+            cmd,
+            [
+                "java",
+                "-jar",
+                os.path.join("C:\\tools", "gnirehtet.jar"),
+                "relay",
+                "-p",
+                "31416",
+            ],
+        )
+
     def test_java_found_by_where_is_used(self):
         with mock.patch(
             "subprocess.run",
@@ -279,6 +294,39 @@ class StaleRelayPids(unittest.TestCase):
         with mock.patch("subprocess.run", side_effect=FileNotFoundError):
             with self.assertRaises(FileNotFoundError):
                 WindowsPlatform().stale_relay_pids(31416)
+
+
+class PortHolders(unittest.TestCase):
+    NETSTAT = _netstat(
+        [
+            "  TCP    127.0.0.1:31416        0.0.0.0:0              LISTENING       4242",
+            "  TCP    127.0.0.1:31416        0.0.0.0:0              LISTENING       5151",
+            "  TCP    0.0.0.0:31416          0.0.0.0:0              LISTENING       6000",
+            "  TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       7070",
+        ]
+    )
+    CMDLINES = {
+        4242: '"java.exe" -jar C:\\Quest Tether\\tools\\gnirehtet.jar relay -p 31416',
+        5151: "C:\\Program Files\\OtherApp\\other.exe --port 31416",
+        # 6000 has no readable command line: not ours
+    }
+
+    def test_lists_every_listener_with_whether_it_is_gnirehtet(self):
+        killed = []
+        with mock.patch(
+            "subprocess.run", side_effect=_fake_run(self.NETSTAT, self.CMDLINES, killed)
+        ):
+            self.assertEqual(
+                WindowsPlatform().port_holders(31416),
+                [(4242, True), (5151, False), (6000, False)],
+            )
+        self.assertEqual(killed, [])
+
+    def test_free_port_has_no_holders(self):
+        with mock.patch(
+            "subprocess.run", side_effect=_fake_run(self.NETSTAT, self.CMDLINES, [])
+        ):
+            self.assertEqual(WindowsPlatform().port_holders(31999), [])
 
 
 class KillTree(unittest.TestCase):

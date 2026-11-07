@@ -10,7 +10,7 @@ No tool binaries (adb, the relay, the headset APK) are stored in the repo. `tool
 
 ## Command line
 
-Run `python cli.py <command>` (the packaged binary is `quest-tether`). Every
+Run `python cli.py <command>`. On Linux, `packaging/linux/install.sh` installs the packaged `quest-tether` and links it at `~/.local/bin/quest-tether`; `quest-tether gui` opens the window. Every
 command prints text by default, or one JSON object with `--json`; exit codes are
 0 on success, 1 on failure and 2 on bad usage. When `qtetherd` answers on
 127.0.0.1:31417 the command goes through the service; otherwise it runs the

@@ -22,6 +22,7 @@ class ConnectFlowTests(unittest.TestCase):
         process.poll.return_value = None
         manager._process = process
         manager._spawn_relay = Mock()
+        manager.relay_mode = "run"  # run-mode spawn; split mode is in test_split_relay.py
         manager._kill_stale_process = Mock()
         manager.restore_wifi_if_flagged = Mock()
         manager._apply_wifi_policy = Mock()

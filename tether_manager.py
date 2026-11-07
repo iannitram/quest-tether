@@ -1,10 +1,15 @@
 """
 Tether Manager
-Wraps `gnirehtet run` — the stock command that handles relay, tunnel,
-and client management as a single process. We add device detection,
-GUI, graceful disconnect, auto-reconnect, and throughput stats.
+Runs the gnirehtet relay and tunnels the headset through it. Split mode (default,
+#66) starts `gnirehtet relay -p <port>` alone, waits until the port listens, then starts
+the Quest-side client ourselves over adb. The old `gnirehtet run` path stays behind
+QT_RELAY_MODE=run for A/B tests. We add device detection, GUI, graceful disconnect,
+auto-reconnect, and throughput stats.
+The split flow and the 25 ms / 5 s port wait are borrowed from gnirehtet-gui
+(Apache-2.0, credited in NOTICE).
 """
 
+import socket
 import subprocess
 import sys
 import threading
@@ -64,7 +69,7 @@ class TetherStats:
 
 
 class TetherManager:
-    """Wraps gnirehtet run as a single managed process."""
+    """Runs the gnirehtet relay (split mode by default, `gnirehtet run` for A/B) and its Quest client."""
 
     RELAY_PORT = 31416
     HEALTH_CHECK_INTERVAL = 5.0
@@ -79,6 +84,10 @@ class TetherManager:
     VPN_FORCE_STOP_WAIT = 2.0
     # Quit path (force_kill): best-effort STOP, each adb call capped at this.
     FORCE_KILL_STOP_TIMEOUT = 2.0
+    # Split relay (#66): relay modes, and how long/how often to wait for the port.
+    RELAY_MODES = ("split", "run")
+    RELAY_LISTEN_TIMEOUT = 5.0
+    RELAY_LISTEN_POLL = 0.025
 
     # Self-healing: consecutive missed tun0 reads (with the relay alive) before
     # each rung of the ladder, and the rate limit between heal actions.
@@ -132,6 +141,10 @@ class TetherManager:
         self._last_wifi_check = 0.0
         self._wifi_attempts: Dict[str, int] = {}  # PC SSID -> failed attempts
         self._relay_log = None
+        # 'split' (relay alone + our client start) or 'run' (gnirehtet run, old path)
+        self._relay_mode = os.environ.get("QT_RELAY_MODE", "split")
+        if self._relay_mode not in self.RELAY_MODES:
+            self._relay_mode = "split"
 
         # Callbacks
         self._on_state_change: Optional[Callable] = None
@@ -192,6 +205,15 @@ class TetherManager:
     WIFI_MODES = ("off", "sync", "leave")
 
     @property
+    def relay_mode(self) -> str:
+        return self._relay_mode
+
+    @relay_mode.setter
+    def relay_mode(self, value: str):
+        if value in self.RELAY_MODES:
+            self._relay_mode = value
+
+    @property
     def wifi_mode(self) -> str:
         return self._wifi_mode
 
@@ -211,13 +233,15 @@ class TetherManager:
         if self._on_log:
             self._on_log(msg)
 
-    def _log_client_start_refused(self):
+    def _client_refusal_text(self) -> str:
         error = getattr(self.adb, "last_client_error", None)
         if isinstance(error, str) and error:
-            self._log(f"client start refused: {error}")
-            return
+            return f"client start refused: {error}"
         code = getattr(self.adb, "last_client_exit_code", None)
-        self._log(f"client start failed (exit code {code})")
+        return f"client start failed (exit code {code})"
+
+    def _log_client_start_refused(self):
+        self._log(self._client_refusal_text())
 
     def _set_state(self, state: TetherState, error: str = ""):
         if state is TetherState.CONNECTED:
@@ -250,7 +274,11 @@ class TetherManager:
         """Start `gnirehtet run` with output appended to relay.log (never DEVNULL —
         a silent relay failure is what hid the no-tunnel bug)."""
         tools_dir = os.path.dirname(self.gnirehtet_path)
-        cmd = self.platform.relay_command(tools_dir, serial)
+        if self.relay_mode == "split":
+            # relay alone on the port; no serial, the client is started by adb (#66)
+            cmd = self.platform.relay_server_command(tools_dir, self.RELAY_PORT)
+        else:
+            cmd = self.platform.relay_command(tools_dir, serial)
 
         # gnirehtet run calls adb internally; ADB may not be on PATH.
         env = os.environ.copy()
@@ -283,6 +311,121 @@ class TetherManager:
             env=env,
         )
         self.stats.relay_pid = self._process.pid
+        return True
+
+    def _relay_log_last_line(self) -> str:
+        """Last non-empty line the current relay wrote to relay.log; "" if none.
+
+        Each start writes a "=== ... relay start" marker first, so a marker reached
+        first (going backwards) means this relay printed nothing.
+        """
+        try:
+            with open(os.path.join(self._data_dir, "relay.log"), "rb") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - 4096))
+                tail = f.read().decode("utf-8", errors="replace")
+        except OSError:
+            return ""
+        for line in reversed(tail.splitlines()):
+            text = line.strip()
+            if not text:
+                continue
+            if text.startswith("==="):
+                return ""
+            return text
+        return ""
+
+    @staticmethod
+    def _port_open(port: int) -> bool:
+        """True if something accepts connections on 127.0.0.1:port (a 0.2 s probe)."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.2)
+            return sock.connect_ex(("127.0.0.1", port)) == 0
+
+    def _wait_until_listening(self, port: int) -> bool:
+        """Poll until the relay listens on port. False if it dies first or the deadline passes."""
+        deadline = time.monotonic() + self.RELAY_LISTEN_TIMEOUT
+        while True:
+            if self._process is None or self._process.poll() is not None:
+                return False
+            if self._port_open(port):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(self.RELAY_LISTEN_POLL)
+
+    def _port_blocker(self, port: int) -> Optional[int]:
+        """PID of a program on port that is not gnirehtet, else None. Read-only."""
+        try:
+            holders = self.platform.port_holders(port)
+        except Exception as e:
+            self._log(f"Warning: could not check port {port}: {e}")
+            return None
+        for pid, is_gnirehtet in holders:
+            if not is_gnirehtet:
+                return pid
+        return None
+
+    def _start_split_relay(self, serial: str) -> Optional[str]:
+        """Split mode (#66): start the relay alone, wait for its port, then start the
+        Quest client ourselves. Returns None when the relay listens and the client
+        start was accepted; else the reason (the caller logs it). Kills only the relay
+        it started, and nothing else."""
+        port = self.RELAY_PORT
+        blocker = self._port_blocker(port)
+        if blocker is not None:
+            return (
+                f"port {port} is held by PID {blocker}, which is not gnirehtet"
+                " — not starting the relay"
+            )
+
+        try:
+            self._spawn_relay(serial)
+        except FileNotFoundError:
+            return "Java or gnirehtet JAR not found"
+        except Exception as e:
+            return str(e)
+        self._log(f"relay started (PID {self._process.pid}), waiting for port {port}")
+
+        if not self._wait_until_listening(port):
+            if self._process.poll() is not None:
+                last = self._relay_log_last_line()
+                reason = "relay exited at startup: " + (
+                    last or "no output in relay.log"
+                )
+            else:
+                reason = (
+                    f"relay did not listen on port {port} within "
+                    f"{int(self.RELAY_LISTEN_TIMEOUT)} s"
+                )
+                self._kill_process()
+            return reason
+
+        if not self.adb.start_gnirehtet_client(serial, port):
+            self._kill_process()
+            return self._client_refusal_text()
+        return None
+
+    def _start_run_relay(self, serial: str) -> bool:
+        """Run mode: `gnirehtet run` starts relay, tunnel and client in one process."""
+        try:
+            self._spawn_relay(serial)
+            self._log(f"gnirehtet started (PID {self._process.pid})")
+        except FileNotFoundError:
+            self._log(f"Java or JAR not found: {self.gnirehtet_path}")
+            self._set_state(TetherState.ERROR, "Java or gnirehtet JAR not found")
+            return False
+        except Exception as e:
+            self._log(f"Failed to start gnirehtet: {e}")
+            self._set_state(TetherState.ERROR, str(e))
+            return False
+
+        # Give it a moment, then check it didn't die immediately
+        time.sleep(1.5)
+        if self._process.poll() is not None:
+            self._log("gnirehtet exited immediately — check Java and JAR path")
+            self._set_state(TetherState.ERROR, "Process exited immediately")
+            return False
         return True
 
     def _kill_process(self):
@@ -361,28 +504,20 @@ class TetherManager:
         self._kill_stale_process()
 
         self._healer.reset()
-        self._log("Starting gnirehtet run...")
 
-        try:
-            self._spawn_relay(serial)
-            self._log(f"gnirehtet started (PID {self._process.pid})")
-        except FileNotFoundError:
-            self._log(f"Java or JAR not found: {self.gnirehtet_path}")
-            self._set_state(TetherState.ERROR, "Java or gnirehtet JAR not found")
-            return False
-        except Exception as e:
-            self._log(f"Failed to start gnirehtet: {e}")
-            self._set_state(TetherState.ERROR, str(e))
-            return False
+        if self.relay_mode == "split":
+            self._log("Starting gnirehtet relay (split mode)...")
+            error = self._start_split_relay(serial)
+            if error:
+                self._log(error)
+                self._set_state(TetherState.ERROR, error)
+                return False
+        else:
+            self._log("Starting gnirehtet run...")
+            if not self._start_run_relay(serial):
+                return False
 
-        # Give it a moment, then check it didn't die immediately
-        time.sleep(1.5)
-        if self._process.poll() is not None:
-            self._log("gnirehtet exited immediately — check Java and JAR path")
-            self._set_state(TetherState.ERROR, "Process exited immediately")
-            return False
-
-        # Wait for tun0 to appear — gnirehtet run handles relay + tunnel + client
+        # Wait for tun0 to appear: the relay runs and the client start was accepted
         self._log("Waiting for VPN tunnel...")
         tun0_present = False
         for i in range(15):
@@ -854,14 +989,21 @@ class TetherManager:
         actual_serial = quest["serial"]
         self.stats.device_serial = actual_serial
 
-        # Restart gnirehtet run
+        # Restart the relay
         self._kill_stale_process()
-        try:
-            self._spawn_relay(actual_serial)
-            self._log(f"gnirehtet restarted (PID {self._process.pid})")
-        except Exception as e:
-            self._log(f"Failed to restart: {e}")
-            return
+        if self.relay_mode == "split":
+            error = self._start_split_relay(actual_serial)
+            if error:
+                self._log(f"Failed to restart: {error}")
+                return
+            self._log(f"relay restarted (PID {self._process.pid})")
+        else:
+            try:
+                self._spawn_relay(actual_serial)
+                self._log(f"gnirehtet restarted (PID {self._process.pid})")
+            except Exception as e:
+                self._log(f"Failed to restart: {e}")
+                return
 
         # Wait for tun0; re-issue the client start once if the first try was missed
         time.sleep(2.0)

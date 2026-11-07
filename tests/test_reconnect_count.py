@@ -35,6 +35,7 @@ class ReconnectCount(unittest.TestCase):
         manager._kill_process = Mock()
         manager._kill_stale_process = Mock()
         manager._spawn_relay = Mock()
+        manager.relay_mode = "run"
         manager._process = Mock(pid=123)
         logs = []
         manager.set_callbacks(on_log=logs.append)

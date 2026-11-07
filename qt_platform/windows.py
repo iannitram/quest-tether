@@ -153,6 +153,17 @@ class WindowsPlatform(Platform):
             serial,
         ]
 
+    def relay_server_command(self, tools_dir: str, port: int) -> List[str]:
+        # split mode (#66): the Java relay alone, no serial; the client is started by adb
+        return [
+            self._find_java(),
+            "-jar",
+            os.path.join(tools_dir, "gnirehtet.jar"),
+            "relay",
+            "-p",
+            str(port),
+        ]
+
     def relay_candidates(self) -> List[Tuple[str, bool]]:
         return [("gnirehtet.jar", True)]
 
@@ -180,8 +191,9 @@ class WindowsPlatform(Platform):
         except Exception:
             return None
 
-    def stale_relay_pids(self, port: int) -> List[int]:
-        # from tether_manager.TetherManager._kill_stale_process (the netstat scan; the kill is kill())
+    @staticmethod
+    def _netstat_listeners(port: int) -> List[int]:
+        # the LISTENING PIDs on port, in netstat order (raises if netstat cannot run)
         pids: List[int] = []
         result = subprocess.run(
             ["netstat", "-ano"],
@@ -193,20 +205,33 @@ class WindowsPlatform(Platform):
         for line in result.stdout.split("\n"):
             if str(port) in line and "LISTENING" in line:
                 parts = line.split()
-                pid = int(parts[-1])
-                is_gnirehtet = self._is_gnirehtet_pid(pid)
-                if is_gnirehtet is None:
-                    logger.info(
-                        f"Port {port} is held by PID {pid}: command line unreadable — leaving it alone"
-                    )
-                    continue
-                if not is_gnirehtet:
-                    logger.info(
-                        f"Port {port} is held by PID {pid}, which is not gnirehtet — leaving it alone"
-                    )
-                    continue
-                pids.append(pid)
+                pids.append(int(parts[-1]))
         return pids
+
+    def stale_relay_pids(self, port: int) -> List[int]:
+        # from tether_manager.TetherManager._kill_stale_process (the netstat scan; the kill is kill())
+        pids: List[int] = []
+        for pid in self._netstat_listeners(port):
+            is_gnirehtet = self._is_gnirehtet_pid(pid)
+            if is_gnirehtet is None:
+                logger.info(
+                    f"Port {port} is held by PID {pid}: command line unreadable — leaving it alone"
+                )
+                continue
+            if not is_gnirehtet:
+                logger.info(
+                    f"Port {port} is held by PID {pid}, which is not gnirehtet — leaving it alone"
+                )
+                continue
+            pids.append(pid)
+        return pids
+
+    def port_holders(self, port: int) -> List[Tuple[int, bool]]:
+        # unreadable command line: "is not gnirehtet" (the fail-closed rule, #67)
+        return [
+            (pid, self._is_gnirehtet_pid(pid) is True)
+            for pid in self._netstat_listeners(port)
+        ]
 
     def kill(self, pid: int) -> None:
         # from tether_manager.TetherManager._kill_stale_process (taskkill, then its 0.5 s wait)
