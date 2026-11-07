@@ -82,11 +82,13 @@ class StartHealthMonitor(unittest.TestCase):
         self.manager.HEALTH_JOIN_TIMEOUT = 0.05
         self.started = []
         self.release = threading.Event()
+        self.began = threading.Event()
         self.manager._health_loop = self._fake_loop
         self.addCleanup(self.release.set)
 
     def _fake_loop(self, serial):
         self.started.append(serial)
+        self.began.set()
         self.release.wait(5)
 
     def _old_thread(self, target):
@@ -97,17 +99,22 @@ class StartHealthMonitor(unittest.TestCase):
 
     def test_starts_a_loop_when_none_is_running(self):
         self.manager._start_health_monitor("quest-serial")
-        REAL_SLEEP(0.05)
 
+        self.assertTrue(self.began.wait(2))
         self.assertEqual(self.started, ["quest-serial"])
         self.assertTrue(self.manager._health_thread.is_alive())
 
     def test_waits_for_an_old_loop_that_is_exiting_then_starts_one(self):
-        old = self._old_thread(lambda: REAL_SLEEP(0.01))
+        # The old loop exits as soon as it is released; the monitor waits for it.
+        self.manager.HEALTH_JOIN_TIMEOUT = 5
+        old_release = threading.Event()
+        old = self._old_thread(lambda: old_release.wait(5))
+        threading.Timer(0.05, old_release.set).start()
+        self.addCleanup(old_release.set)
 
         self.manager._start_health_monitor("quest-serial")
-        REAL_SLEEP(0.05)
 
+        self.assertTrue(self.began.wait(2))
         self.assertFalse(old.is_alive())
         self.assertIsNot(self.manager._health_thread, old)
         self.assertEqual(self.started, ["quest-serial"])
@@ -131,8 +138,8 @@ class StartHealthMonitor(unittest.TestCase):
         old.join()
 
         self.manager._start_health_monitor("quest-serial")
-        REAL_SLEEP(0.05)
 
+        self.assertTrue(self.began.wait(2))
         self.assertIsNot(self.manager._health_thread, old)
         self.assertEqual(self.started, ["quest-serial"])
 
@@ -180,6 +187,11 @@ class DisconnectKeepsAStuckLoop(unittest.TestCase):
         self.assertIsNone(manager._health_thread)
 
 
+def live_health_loops(manager):
+    return [t for t in threading.enumerate()
+            if t.is_alive() and getattr(t, "_target", None) == manager._health_loop]
+
+
 class DeathThenReconnectRunsOneLoop(unittest.TestCase):
     """The issue's flow on real threads: relay death with auto-reconnect off, then a
     new session's health monitor. Only one loop is alive at the end."""
@@ -189,6 +201,8 @@ class DeathThenReconnectRunsOneLoop(unittest.TestCase):
         manager._auto_reconnect = False
         relay_alive = [False]
         manager.is_relay_running = lambda: relay_alive[0]
+        polled = threading.Event()
+        manager._update_stats = Mock(side_effect=lambda s: polled.set() or True)
 
         with patch("tether_manager.time.sleep", lambda s: REAL_SLEEP(0.001)):
             manager._running = True
@@ -204,14 +218,118 @@ class DeathThenReconnectRunsOneLoop(unittest.TestCase):
             manager._running = True
             manager._start_health_monitor("quest-serial")
             second = manager._health_thread
-            REAL_SLEEP(0.02)
-            alive = [t for t in threading.enumerate()
-                     if getattr(t, "_target", None) == manager._health_loop]
+            polled.clear()
+            self.assertTrue(polled.wait(2), "the new loop polls")
+            alive = live_health_loops(manager)
             manager._running = False
             second.join(2)
 
         self.assertIsNot(first, second)
         self.assertEqual(len(alive), 1)
+
+    def test_a_loop_still_alive_at_the_next_start_is_the_only_one(self):
+        """The old loop never saw the stop (Connect set _running again first): the
+        second start keeps it, and still exactly one loop is alive."""
+        manager = make_manager()
+        manager.HEALTH_JOIN_TIMEOUT = 0.05
+        manager.is_relay_running = lambda: True
+        polled = []
+        got_new = threading.Event()
+
+        def update_stats(serial):
+            polled.append(serial)
+            if serial == "new-serial":
+                got_new.set()
+            return True
+        manager._update_stats = update_stats
+
+        with patch("tether_manager.time.sleep", lambda s: REAL_SLEEP(0.001)):
+            manager._running = True
+            manager._start_health_monitor("old-serial")
+            first = manager._health_thread
+            manager._start_health_monitor("new-serial")
+
+            self.assertTrue(got_new.wait(2), "the kept loop follows the new serial")
+            alive = live_health_loops(manager)
+            manager._running = False
+            first.join(2)
+
+        self.assertIs(manager._health_thread, first)
+        self.assertEqual(len(alive), 1)
+
+
+class ConnectStartsTheOnlyLoop(unittest.TestCase):
+    """Through connect(), not by hand: Connect after a relay death keeps one loop."""
+
+    def make_connecting_manager(self):
+        manager = make_manager()
+        manager.HEALTH_JOIN_TIMEOUT = 0.05
+        manager.relay_mode = "run"
+        process = Mock()
+        process.pid = 123
+        process.poll.return_value = None
+        manager._process = process
+        manager._spawn_relay = Mock()
+        manager._kill_stale_process = Mock()
+        manager.restore_wifi_if_flagged = Mock()
+        manager._apply_wifi_policy = Mock()
+        manager.adb.is_vpn_up.return_value = True
+        manager.adb.get_device_details.return_value = {}
+        return manager
+
+    def test_connect_after_a_relay_death_starts_one_loop(self):
+        manager = self.make_connecting_manager()
+        manager._auto_reconnect = False
+        manager.is_relay_running = lambda: False
+        release = threading.Event()
+        self.addCleanup(release.set)
+        loops = []
+
+        def fake_loop(serial):
+            loops.append(serial)
+            release.wait(5)
+        with patch("tether_manager.time.sleep", lambda s: None):
+            manager._running = True
+            manager._session_started = True
+            manager._relay_died("quest-serial")
+            self.assertEqual(manager.stats.state, TetherState.ERROR)
+            self.assertFalse(manager._running)
+
+            manager._health_loop = fake_loop
+            self.assertTrue(manager.connect("quest-serial"))
+            self.assertTrue(manager._running, "connect clears the stop the death made")
+            first = manager._health_thread
+            self.assertTrue(first.is_alive())
+
+            # A second Connect (state forced back to ERROR) keeps the one loop.
+            manager._set_state(TetherState.ERROR, "again")
+            self.assertTrue(manager.connect("quest-serial"))
+
+        self.assertIs(manager._health_thread, first)
+        self.assertEqual(loops, ["quest-serial"])
+
+
+class DeathWithAutoReconnectOn(unittest.TestCase):
+    def test_a_death_after_a_stop_does_not_reconnect(self):
+        manager = make_manager()
+        manager._auto_reconnect = True
+        manager._running = False
+        manager._session_started = True
+
+        manager._relay_died("quest-serial")
+
+        manager._attempt_reconnect.assert_not_called()
+        self.assertEqual(manager.stats.state, TetherState.ERROR)
+
+    def test_a_death_with_auto_reconnect_on_keeps_the_loop_running(self):
+        manager = make_manager()
+        manager._auto_reconnect = True
+        manager._running = True
+        manager._session_started = True
+
+        manager._relay_died("quest-serial")
+
+        self.assertTrue(manager._running)
 
 
 if __name__ == "__main__":
