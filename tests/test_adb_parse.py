@@ -47,6 +47,7 @@ class AmStartClient(unittest.TestCase):
         manager = self.make_manager()
         outputs = [
             self.result(),
+            self.result(),  # wake (#64)
             self.result(
                 stdout="Starting: Intent { ... }\n"
                 "Error: Activity class {com.genymobile.gnirehtet/"
@@ -63,7 +64,7 @@ class AmStartClient(unittest.TestCase):
 
     def test_start_refused_with_error_type_3_returns_false(self):
         manager = self.make_manager()
-        outputs = [self.result(), self.result(stderr="Error type 3\n")]
+        outputs = [self.result(), self.result(), self.result(stderr="Error type 3\n")]
         with patch.object(manager, "run_adb", side_effect=outputs):
             self.assertFalse(manager.start_gnirehtet_client("quest-serial"))
         self.assertEqual(manager.last_client_error, "Error type 3")
@@ -72,6 +73,7 @@ class AmStartClient(unittest.TestCase):
         manager = self.make_manager()
         outputs = [
             self.result(),
+            self.result(),  # wake (#64)
             self.result(
                 stdout="Starting: Intent { act=com.genymobile.gnirehtet.START "
                 "cmp=com.genymobile.gnirehtet/.GnirehtetActivity }\n"
@@ -84,9 +86,33 @@ class AmStartClient(unittest.TestCase):
     def test_start_with_empty_output_keeps_the_return_code(self):
         manager = self.make_manager()
         with patch.object(
-            manager, "run_adb", side_effect=[self.result(), self.result()]
+            manager, "run_adb", side_effect=[self.result(), self.result(), self.result()]
         ):
             self.assertTrue(manager.start_gnirehtet_client("quest-serial"))
+
+    def test_start_wakes_the_headset_before_the_start_intent(self):
+        manager = self.make_manager()
+        with patch.object(manager, "run_adb", return_value=self.result()) as run:
+            manager.start_gnirehtet_client("quest-serial")
+        argvs = [c.args for c in run.call_args_list]
+        wake = argvs.index(("-s", "quest-serial", "shell", "input", "keyevent", "224"))
+        start = next(i for i, a in enumerate(argvs) if "com.genymobile.gnirehtet.START" in a)
+        self.assertLess(wake, start)
+
+    def test_stop_wakes_the_headset_before_the_stop_intent(self):
+        manager = self.make_manager()
+        with patch.object(manager, "run_adb", return_value=self.result()) as run:
+            self.assertTrue(manager.stop_gnirehtet_client("quest-serial"))
+        argvs = [c.args for c in run.call_args_list]
+        self.assertEqual(argvs[0], ("-s", "quest-serial", "shell", "input", "keyevent", "224"))
+        self.assertIn("com.genymobile.gnirehtet.STOP", argvs[1])
+
+    def test_failed_wake_does_not_stop_the_stop_intent(self):
+        manager = self.make_manager()
+        outputs = [self.result(returncode=1, stderr="device offline"), self.result()]
+        with patch.object(manager, "run_adb", side_effect=outputs) as run:
+            self.assertTrue(manager.stop_gnirehtet_client("quest-serial"))
+        self.assertEqual(run.call_count, 2)
 
     def test_stop_refused_returns_false(self):
         manager = self.make_manager()
@@ -97,6 +123,25 @@ class AmStartClient(unittest.TestCase):
         ):
             self.assertFalse(manager.stop_gnirehtet_client("quest-serial"))
         self.assertEqual(manager.last_client_error, "Error: not installed")
+
+
+class VpnAgentState(unittest.TestCase):
+    @staticmethod
+    def make_manager():
+        platform = Mock()
+        platform.no_window_flags.return_value = 0
+        return adb_manager.ADBManager(adb_path="adb", platform=platform)
+
+    def test_reads_the_state_word_from_dumpsys(self):
+        manager = self.make_manager()
+        dumpsys = "NetworkAgentInfo{network{99}} ni{VPN CONNECTED sessionId=Gnirehtet}\n"
+        with patch.object(manager, "run_adb", return_value=subprocess.CompletedProcess([], 0, dumpsys, "")):
+            self.assertEqual(manager.vpn_agent_state("quest-serial"), "CONNECTED")
+
+    def test_unreadable_dumpsys_is_none(self):
+        manager = self.make_manager()
+        with patch.object(manager, "run_adb", return_value=subprocess.CompletedProcess([], 1, "", "")):
+            self.assertIsNone(manager.vpn_agent_state("quest-serial"))
 
 
 class UdevFiles(unittest.TestCase):

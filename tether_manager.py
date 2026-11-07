@@ -72,6 +72,13 @@ class TetherManager:
     MAX_RECONNECT_ATTEMPTS = 10
     POST_CONNECT_COOLDOWN = 10.0
     BATTERY_POLL_INTERVAL = 120.0
+    # Disconnect (#64): how long tun0 may take to go after the STOP intent, the
+    # poll step, and the shorter wait after a force-stop. Defaults; device-tune later.
+    VPN_CLOSE_DEADLINE = 6.0
+    VPN_CLOSE_POLL = 0.5
+    VPN_FORCE_STOP_WAIT = 2.0
+    # Quit path (force_kill): best-effort STOP, each adb call capped at this.
+    FORCE_KILL_STOP_TIMEOUT = 2.0
 
     # Self-healing: consecutive missed tun0 reads (with the relay alive) before
     # each rung of the ladder, and the rate limit between heal actions.
@@ -302,9 +309,21 @@ class TetherManager:
 
         Waits for the process to fully exit so file handles are released
         before PyInstaller tries to clean up its temp directory.
+
+        One exception (#64, as gnirehtet-gui does): a best-effort STOP intent
+        goes to the headset first, with each adb call capped, so the VPN does
+        not outlive the relay. Total wait stays around 4 s at most.
         """
         if not self._process:
             return
+        serial = self.stats.device_serial
+        if serial:
+            try:
+                self.adb.stop_gnirehtet_client(
+                    serial, timeout=self.FORCE_KILL_STOP_TIMEOUT
+                )
+            except Exception:
+                pass
         pid = self._process.pid
         try:
             self.platform.kill_tree(pid)
@@ -408,7 +427,13 @@ class TetherManager:
         return True
 
     def disconnect(self):
-        """Graceful shutdown — stop VPN on Quest, then kill gnirehtet process."""
+        """Graceful shutdown, VPN first (#64; the order is from quest-vd-wired).
+
+        1. Stop the VPN on the headset and wait (bounded) for tun0 to go.
+        2. Put Wi-Fi back and verify it.
+        3. Always, even if 1 or 2 failed: remove the reverse tunnels, then kill
+           the relay. The relay dies last.
+        """
         self._running = False
         self._set_state(TetherState.STOPPING)
 
@@ -419,53 +444,80 @@ class TetherManager:
 
         serial = self.stats.device_serial
 
-        # Step 1: Kill the gnirehtet run process (stops relay)
-        self._kill_process()
-
-        if serial:
-            # Step 2: Tell Quest to drop VPN (relay is gone, but VPN may linger)
-            self._log("Telling Quest to drop VPN...")
-            self.adb.stop_gnirehtet_client(serial)
-            time.sleep(1.5)
-
-            # Step 3: Force-stop if VPN still up
-            if not self.adb.is_vpn_down(serial):
-                self._log("VPN still up — force-stopping...")
-                self.adb.force_stop_gnirehtet(serial)
-                time.sleep(1.0)
-
-            if self.adb.is_vpn_down(serial):
-                self._log("VPN interface down")
-            else:
-                self._log("Warning: VPN interface still present")
-
-            # Step 4: Toggle Wi-Fi to restore DNS
-            self._log("Toggling Wi-Fi to restore DNS...")
-            self.adb.toggle_wifi(serial, wait_seconds=5.0)
-            self._clear_wifi_flag()
-
-            # Step 5: Verify Wi-Fi connectivity
-            wifi_ok = False
-            for attempt in range(6):
-                if self.adb.check_wifi_connectivity(serial):
-                    wifi_ok = True
-                    self._log("Quest Wi-Fi restored (routing + DNS)!")
-                    break
-                self._log(f"Waiting for Wi-Fi... ({attempt + 1}/6)")
-                time.sleep(1.5)
-
-            if not wifi_ok:
-                self._log(
-                    "Could not confirm Wi-Fi restored — may need manual reconnect"
-                )
-
-            # Step 6: Clean up any lingering ADB tunnels
-            self.adb.remove_all_reverse_tunnels(serial)
+        try:
+            if serial:
+                self._stop_vpn_on_headset(serial)
+        except Exception as e:
+            self._log(f"Headset-side stop failed: {e}")
+        finally:
+            if serial:
+                try:
+                    self.adb.remove_all_reverse_tunnels(serial)
+                except Exception as e:
+                    self._log(f"Could not remove reverse tunnels: {e}")
+            self._kill_process()
 
         self.stats = TetherStats()
         self._start_time = None
         self._set_state(TetherState.IDLE)
         self._log("Disconnected")
+
+    def _stop_vpn_on_headset(self, serial: str):
+        """Steps 1 and 2 of disconnect. Assumes the caller kills the relay after."""
+        if self.adb.find_serial() != serial:
+            self._log(
+                "Headset not reachable over adb — the VPN may still be on. "
+                "Stopping the relay anyway."
+            )
+            return
+
+        self._log("Telling Quest to drop VPN...")
+        self.adb.stop_gnirehtet_client(serial)  # wakes the headset first
+
+        if self._wait_vpn_closed(serial):
+            self._log("VPN interface down")
+        else:
+            state = self.adb.vpn_agent_state(serial)
+            self._log(
+                f"VPN still up after {self.VPN_CLOSE_DEADLINE:g} s "
+                f"(headset VPN agent: {state or 'not listed'}) — force-stopping..."
+            )
+            self.adb.force_stop_gnirehtet(serial)
+            if self._wait_vpn_closed(serial, deadline=self.VPN_FORCE_STOP_WAIT):
+                self._log("VPN interface down")
+            else:
+                self._log("Warning: VPN interface still present")
+
+        # Toggle Wi-Fi to restore DNS
+        self._log("Toggling Wi-Fi to restore DNS...")
+        self.adb.toggle_wifi(serial, wait_seconds=5.0)
+        self._clear_wifi_flag()
+
+        # Verify Wi-Fi connectivity
+        wifi_ok = False
+        for attempt in range(6):
+            if self.adb.check_wifi_connectivity(serial):
+                wifi_ok = True
+                self._log("Quest Wi-Fi restored (routing + DNS)!")
+                break
+            self._log(f"Waiting for Wi-Fi... ({attempt + 1}/6)")
+            time.sleep(1.5)
+
+        if not wifi_ok:
+            self._log("Could not confirm Wi-Fi restored — may need manual reconnect")
+
+    def _wait_vpn_closed(self, serial: str, deadline: Optional[float] = None) -> bool:
+        """Poll tun0 until it is gone or the deadline passes (seconds). Never sleeps
+        past the deadline, so a fixed sleep is not needed (#64)."""
+        limit = time.monotonic() + (
+            self.VPN_CLOSE_DEADLINE if deadline is None else deadline
+        )
+        while True:
+            if self.adb.is_vpn_down(serial):
+                return True
+            if time.monotonic() >= limit:
+                return False
+            time.sleep(self.VPN_CLOSE_POLL)
 
     # --- Health Monitoring ---
 

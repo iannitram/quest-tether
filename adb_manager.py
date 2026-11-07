@@ -14,6 +14,7 @@ from typing import Optional, Callable, Dict, List
 
 import am_result
 import qt_platform
+import vpn_state
 
 logger = logging.getLogger(__name__)
 
@@ -230,8 +231,30 @@ class ADBManager:
             logger.warning("%s", error)
         return error
 
-    def stop_gnirehtet_client(self, serial: str) -> bool:
-        """Stop the gnirehtet VPN client on the device."""
+    # KEYCODE_WAKEUP. The wake-before-intent step is from quest-vd-wired
+    # (Apache-2.0, see NOTICE; #64).
+    KEYCODE_WAKEUP = 224
+
+    def wake_headset(self, serial: str, timeout: float = 3.0) -> bool:
+        """Wake the headset screen so the next client intent is delivered (#64).
+
+        Best effort: the caller goes on whether or not this works, because
+        `am start` to a sleeping headset can be dropped silently.
+        """
+        result = self.run_adb(
+            "-s",
+            serial,
+            "shell",
+            "input",
+            "keyevent",
+            str(self.KEYCODE_WAKEUP),
+            timeout=timeout,
+        )
+        return result.returncode == 0
+
+    def stop_gnirehtet_client(self, serial: str, timeout: float = 10.0) -> bool:
+        """Stop the gnirehtet VPN client on the device (wakes the headset first, #64)."""
+        self.wake_headset(serial, timeout=min(timeout, 3.0))
         result = self.run_adb(
             "-s",
             serial,
@@ -242,6 +265,7 @@ class ADBManager:
             "com.genymobile.gnirehtet/.GnirehtetActivity",
             "-a",
             "com.genymobile.gnirehtet.STOP",
+            timeout=timeout,
         )
         if self._am_start_error(result):
             return False
@@ -254,6 +278,7 @@ class ADBManager:
         once at launch, so a missed attempt leaves the relay up with no tunnel.
         """
         self.run_adb("-s", serial, "reverse", "localabstract:gnirehtet", f"tcp:{port}")
+        self.wake_headset(serial)
         result = self.run_adb(
             "-s",
             serial,
@@ -284,6 +309,15 @@ class ADBManager:
         """Check if the gnirehtet VPN interface (tun0) is gone."""
         result = self.run_adb("-s", serial, "shell", "ip", "link", "show", "tun0")
         return result.returncode != 0 or "does not exist" in result.stderr
+
+    def vpn_agent_state(self, serial: str) -> Optional[str]:
+        """The gnirehtet VPN agent's state word from `dumpsys connectivity`, or None
+        when it is not listed or the read failed (#64). Diagnostic: the disconnect
+        log uses it when tun0 outlives the STOP intent."""
+        result = self.run_adb("-s", serial, "shell", "dumpsys", "connectivity", timeout=5)
+        if result.returncode != 0:
+            return None
+        return vpn_state.gnirehtet_vpn_state(result.stdout)
 
     def force_stop_gnirehtet(self, serial: str) -> bool:
         """Force-stop the gnirehtet app."""
