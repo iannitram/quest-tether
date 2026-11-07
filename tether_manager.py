@@ -730,9 +730,12 @@ class TetherManager:
             self._tunnel_missing(serial, now)
 
     def _tunnel_seen(self, now: float):
-        """tun0 is up. Liveness resets only after it has stayed up for GRACE, so a
-        relay that dies again right after a restart still backs off (#65)."""
+        """tun0 is up. The silence and awake clocks restart at once, so a later miss
+        has to earn its own grace. The restart count and backoff stay until tun0 has
+        stayed up for GRACE, so a relay that dies again right after a restart
+        still backs off (#65)."""
         self._healer.observe(now, True, True)
+        self._set_liveness(self._liveness_now().ineligible())
         if self._tun_up_since is None:
             self._tun_up_since = now
         if now - self._tun_up_since >= heal_policy.GRACE:
@@ -746,7 +749,11 @@ class TetherManager:
         live = self._liveness_now().silent(now)
         if live.probe_due(now):
             awake = self.adb.is_headset_awake(serial)
-            if awake is not None:  # None: no reading, so no decision from it
+            if awake is None:
+                # No reading: not proof of awake. Drop the stale awake and silence
+                # clocks so no restart rests on them (unplugged, adb hung).
+                live = live.ineligible()
+            else:
                 live = live.observed(awake, now)
         self._set_liveness(live)
 
@@ -772,6 +779,7 @@ class TetherManager:
         if self._restart_cap_reached():
             self._give_up_healing(self._keeps_dropping_text())
             return
+        self._set_state(TetherState.RECONNECTING)
         self._wait_backoff()
         if self._running:
             self._attempt_reconnect(serial)
@@ -781,7 +789,8 @@ class TetherManager:
         return self._liveness_now().restarts >= self.HEAL_FINAL_RESTARTS
 
     def _note_restart(self, now: float):
-        self._set_liveness(self._liveness_now().restarted(now))
+        with self._liveness_lock:
+            self._liveness = self._liveness.restarted(now)
 
     def _wait_backoff(self):
         """Sleep until the restart backoff allows the next relay restart. Steps of

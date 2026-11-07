@@ -153,6 +153,49 @@ class AsleepAndAwake(LivenessHarness):
         self.assertEqual(self.manager._liveness_now().restarts, 0)
 
 
+    def test_a_short_tunnel_blip_restarts_the_grace_clocks(self):
+        # tun0 is gone at 0-14 s, back for 5 s, gone again from 20 s. The second
+        # outage must earn its own 10 s grace instead of reusing the first one.
+        self.awake_at = lambda t: True
+        self.tun_up_at = lambda t: 15 <= t < 20
+
+        self.run_until(60)
+
+        self.assertEqual(self.heal_times()[:1], [10], "first outage heals after the grace")
+        self.assertEqual(self.manager._liveness_now().restarts, 1)
+        # restart at 10 backs off to 70, so no second heal inside this run; the
+        # point is the clocks: after the blip silent_since is the new outage start.
+        self.assertEqual(self.manager._liveness_now().silent_since, 20.0)
+
+    def test_a_blip_does_not_make_the_next_miss_an_instant_heal(self):
+        self.awake_at = lambda t: True
+        self.tun_up_at = lambda t: 5 <= t < 10 or t >= 1000   # one short blip, then a long gap
+        self.manager.HEAL_FINAL_RESTARTS = 99
+
+        self.run_until(1000)
+
+        # First outage 0-5 s: no heal yet (under the grace). Blip. Second outage
+        # starts at 10 s and heals one grace later, not at 10 s.
+        self.assertEqual(self.heal_times()[0], 20)
+
+    def test_an_awake_reading_then_no_reading_causes_no_heal(self):
+        self.awake_at = lambda t: True if t < 20 else None
+        self.tun_up_at = lambda t: False
+        self.manager.HEAL_FINAL_RESTARTS = 99
+
+        self.run_until(300)
+
+        self.assertEqual(self.heal_times(), [10], "only the heal before the readings stopped")
+
+    def test_no_reading_from_the_start_after_awake_reading_blocks_restart_due(self):
+        self.awake_at = lambda t: True if t < 5 else None   # awake once, then unknown
+        self.tun_up_at = lambda t: False
+
+        self.run_until(300)
+
+        self.assertEqual(self.heals, [])
+
+
 class CapAndRelayDeath(LivenessHarness):
     def test_the_final_restart_cap_sets_error_once_and_stops(self):
         self.manager.HEAL_FINAL_RESTARTS = 2
@@ -174,6 +217,19 @@ class CapAndRelayDeath(LivenessHarness):
         self.run_until(200)
 
         self.assertEqual(self.reconnects[:3], [0, 60, 180])
+
+    def test_the_state_shows_reconnecting_while_the_relay_backs_off(self):
+        self.manager.is_relay_running = lambda: False
+        self.tun_up_at = lambda t: False
+        seen = []
+        self.clock.on_sleep = lambda now: (
+            seen.append(self.manager.stats.state),
+            setattr(self.manager, "_running", now < 30),
+        )
+        self.manager._running = True
+        self.manager._health_loop("quest-serial")
+
+        self.assertIn(TetherState.RECONNECTING, seen)
 
     def test_disconnect_during_relay_backoff_ends_the_wait_at_once(self):
         self.manager.is_relay_running = lambda: False
