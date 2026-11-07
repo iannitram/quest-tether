@@ -75,10 +75,12 @@ class WindowStateTests(unittest.TestCase):
         adb.is_vpn_up.return_value = False
         adb.get_device_details.return_value = {}
         manager = TetherManager(adb, gnirehtet_path="fake.jar")
-        manager._process = Mock()
-        manager._process.pid = 123
-        manager._process.poll.return_value = None
-        manager._spawn_relay = Mock()
+        process = Mock()
+        process.pid = 123
+        process.poll.return_value = None
+        # The spawn hands over the relay; connect() kills one already running (#107).
+        manager._spawn_relay = Mock(
+            side_effect=lambda serial: setattr(manager, "_process", process))
         manager.relay_mode = "run"
         manager._kill_stale_process = Mock()
         manager.restore_wifi_if_flagged = Mock()
