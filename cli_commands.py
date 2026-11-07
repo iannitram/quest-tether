@@ -8,6 +8,7 @@ in-process TetherManager. Everything that differs by OS stays in qt_platform.
 
 import glob
 import os
+import socket
 import subprocess
 import sys
 from typing import Any, Callable, Dict, List, Optional
@@ -110,6 +111,8 @@ class ServiceBackend(Backend):
             reply = self._request(cmd, timeout=timeout)
         except OSError as exc:
             return {"ok": False, "error": "service not reachable: %s" % exc}
+        except ValueError as exc:
+            return {"ok": False, "error": "bad service reply: %s" % exc}
         return _reply(reply, "service")
 
     def status(self):
@@ -182,19 +185,28 @@ class LocalBackend(Backend):
         )
 
 
+# The probe errors that mean "no service here": a refused or reset connection,
+# qtetherd.request's ConnectionError("no answer") for an empty reply, or a
+# timeout (socket.timeout is TimeoutError on Python 3.10+).
+SERVICE_ABSENT_ERRORS = (ConnectionError, socket.timeout)
+
+
 def make_backend(platform=None, request=None, adb=None, tether=None) -> Backend:
     """Pick the service or in-process path once, for one command.
 
-    Only a refused or otherwise failed connection (OSError) means "no
-    service"; a service that answers but gives a bad reply stays the service
-    path, so its error is reported instead of silently starting a second core.
+    Only a refused, reset, silent or timed-out connection means "no service":
+    those fall back to LocalBackend. Any other socket error, or an answer that
+    is not JSON, keeps the service path, so the command reports that error
+    instead of silently starting a second core next to a service that is there.
     """
     platform = platform or qt_platform.current()
     probe = request or qtetherd.request
     try:
         probe({"cmd": "status"}, timeout=1)
-    except OSError:
+    except SERVICE_ABSENT_ERRORS:
         return LocalBackend(platform=platform, adb=adb, tether=tether)
+    except (OSError, ValueError):
+        pass  # the service path reports this error on the command's own call
     return ServiceBackend(platform=platform, request=probe, adb=adb, tether=tether)
 
 
