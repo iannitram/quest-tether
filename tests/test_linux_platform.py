@@ -38,6 +38,12 @@ class Basics(unittest.TestCase):
             LinuxPlatform().relay_command("/t", "S1"), ["/t/gnirehtet", "run", "S1"]
         )
 
+    def test_relay_server_command_is_the_relay_alone(self):
+        self.assertEqual(
+            LinuxPlatform().relay_server_command("/t", 31416),
+            ["/t/gnirehtet", "relay", "-p", "31416"],
+        )
+
 
 class ToolPath(unittest.TestCase):
     def test_first_base_dir_with_the_file_wins(self):
@@ -221,3 +227,29 @@ class PcWifi(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PortHolders(unittest.TestCase):
+    def setUp(self):
+        p = mock.patch.object(
+            linux, "_read_cmdline", side_effect=lambda pid: CMDLINES.get(pid, "")
+        )
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_lists_every_listener_with_whether_it_is_gnirehtet(self):
+        # 4242 is gnirehtet, 77 is sshd, 9000 has no readable command line (not ours)
+        with mock.patch.object(linux, "_run", return_value=SS) as run:
+            self.assertEqual(
+                LinuxPlatform().port_holders(31416),
+                [(4242, True), (77, False), (9000, False)],
+            )
+            run.assert_called_once_with(["ss", "-ltnp"])
+
+    def test_free_port_has_no_holders(self):
+        with mock.patch.object(linux, "_run", return_value=SS):
+            self.assertEqual(LinuxPlatform().port_holders(5555), [])
+
+    def test_no_holders_when_ss_fails(self):
+        with mock.patch.object(linux, "_run", return_value=""):
+            self.assertEqual(LinuxPlatform().port_holders(31416), [])

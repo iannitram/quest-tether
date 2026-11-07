@@ -79,6 +79,7 @@ class WindowStateTests(unittest.TestCase):
         manager._process.pid = 123
         manager._process.poll.return_value = None
         manager._spawn_relay = Mock()
+        manager.relay_mode = "run"
         manager._kill_stale_process = Mock()
         manager.restore_wifi_if_flagged = Mock()
         manager._apply_wifi_policy = Mock()

@@ -6,7 +6,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from qt_platform.linux_paths import (  # noqa: E402
-    autostart_command, autostart_entry, autostart_path, data_dir_path, relay_command)
+    autostart_command, autostart_entry, autostart_path, data_dir_path, relay_command,
+    relay_server_command)
 
 FROZEN = types.MappingProxyType
 
@@ -28,6 +29,16 @@ class RelayCommand(unittest.TestCase):
     def test_native_relay_run_serial(self):
         self.assertEqual(relay_command("/opt/qt/tools", "1WMHH0000"),
                          ["/opt/qt/tools/gnirehtet", "run", "1WMHH0000"])
+
+
+class RelayServerCommand(unittest.TestCase):
+    def test_native_relay_alone_on_the_port(self):
+        self.assertEqual(relay_server_command("/path/tools", 31416),
+                         ["/path/tools/gnirehtet", "relay", "-p", "31416"])
+
+    def test_run_command_is_unchanged(self):
+        self.assertEqual(relay_command("/path/tools", "S1"),
+                         ["/path/tools/gnirehtet", "run", "S1"])
 
 
 class Autostart(unittest.TestCase):

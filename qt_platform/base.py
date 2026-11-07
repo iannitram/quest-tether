@@ -24,6 +24,17 @@ class Platform:
         """The command that runs `gnirehtet run <serial>` with this OS's relay."""
         raise NotImplementedError
 
+    def relay_server_command(self, tools_dir: str, port: int) -> List[str]:
+        """The command that runs only the relay on port (`gnirehtet relay -p <port>`).
+
+        No serial: the caller starts the Quest-side client itself (split mode, #66).
+        """
+        raise NotImplementedError
+
+    def port_holders(self, port: int) -> List[Tuple[int, bool]]:
+        """Every process listening on port as (pid, is_gnirehtet). Unreadable command lines count as not gnirehtet."""
+        raise NotImplementedError
+
     def relay_candidates(self) -> List[Tuple[str, bool]]:
         """Accepted relay filenames in preference order, each with whether it needs Java."""
         raise NotImplementedError

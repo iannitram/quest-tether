@@ -8,6 +8,10 @@ License, Version 2.0:
   (adb_manager.py, am_result.py; #63).
 - Parsing of the relay's "Client #N connected/disconnected" lines
   (relay_log.py; #62).
+- The split relay flow: the relay started alone with `relay -p`, a port wait
+  polled every 25 ms with a 5 s deadline, the Quest client started after it
+  listens, and the relay's last log line as the reason when it dies at
+  startup (tether_manager.py; #66).
 
 gnirehtet-gui's own NOTICE reads, in the part that applies:
 
