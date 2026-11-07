@@ -165,8 +165,8 @@ class FakeTether:
         self.stats.device_serial = serial
         return True
 
-    def disconnect(self):
-        self.calls.append(("disconnect",))
+    def disconnect(self, headset_present=True):
+        self.calls.append(("disconnect", headset_present))
         self.stats = TetherStats()
 
     def is_relay_available(self):
@@ -376,7 +376,7 @@ class InProcessPath(unittest.TestCase):
         env = make_env()
         result = cli_commands.disconnect(env.local)
         self.assertEqual(result, {"ok": True})
-        self.assertIn(("disconnect",), env.tether.calls)
+        self.assertIn(("disconnect", True), env.tether.calls)
 
     def test_disconnect_cleans_up_a_relay_left_by_an_earlier_process(self):
         env = make_env()
@@ -700,7 +700,7 @@ class ConnectHold(unittest.TestCase):
                     code = cli.main(["connect", "--hold"])
         self.assertEqual(code, 0)
         self.assertIn(("connect", SERIAL), env.tether.calls)
-        self.assertIn(("disconnect",), env.tether.calls)
+        self.assertIn(("disconnect", True), env.tether.calls)
         self.assertIn("Holding the tether; press Ctrl+C to stop.", out.getvalue())
 
     def test_hold_in_process_json_prints_json_to_stdout(self):
@@ -714,7 +714,7 @@ class ConnectHold(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out.getvalue()), {"ok": True})
         self.assertIn("Holding the tether", err.getvalue())
-        self.assertIn(("disconnect",), env.tether.calls)
+        self.assertIn(("disconnect", True), env.tether.calls)
 
     def test_hold_aborts_when_connect_fails(self):
         env = make_env()

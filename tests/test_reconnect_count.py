@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import qtetherd  # noqa: E402
 from heal import Heal  # noqa: E402
 from tether_manager import TetherManager, TetherState  # noqa: E402
 
@@ -74,6 +75,97 @@ class ReconnectCount(unittest.TestCase):
         self.assertEqual(
             manager._reconnect_attempts, 0, "Connected means the outage is over"
         )
+
+    @patch("tether_manager.time.sleep", return_value=None)
+    def test_unplug_replug_through_service_callbacks(self, _sleep):
+        """The cable comes out and goes back in during the reconnect (#86).
+
+        One drop is one reconnect, one relay is started, and no headset-side
+        call is made. The replug does not start a second connect().
+        """
+        adb = Mock()
+        adb.is_vpn_up.return_value = True
+        manager = TetherManager(adb, gnirehtet_path="fake.jar")
+        manager.relay_mode = "run"
+        manager._running = True
+        manager._set_state(TetherState.CONNECTED)
+        manager.stats.device_serial = "S"
+        manager._kill_process = Mock()
+        manager._kill_stale_process = Mock()
+        manager._spawn_relay = Mock()
+        manager._process = Mock(pid=1)
+        logs = []
+        manager.set_callbacks(on_log=logs.append)
+        on_connected, on_disconnected = qtetherd._monitor_callbacks(manager)
+
+        on_disconnected()  # unplug: the health loop owns the recovery
+
+        polls = []
+
+        def find_quest():
+            polls.append(1)
+            if len(polls) == 1:
+                return None  # the cable is out
+            if len(polls) == 2:
+                # the cable goes back in while the wait loop polls
+                on_connected({"serial": "S", "status": "device"})
+            return {"serial": "S", "status": "device"}
+
+        adb.find_quest.side_effect = find_quest
+
+        manager._attempt_reconnect("S")  # the health loop's reconnect
+
+        self.assertEqual(manager.stats.reconnect_count, 1)
+        manager._spawn_relay.assert_called_once()
+        self.assertEqual(manager.stats.state, TetherState.CONNECTED)
+        headset_calls = {c[0] for c in adb.mock_calls} - {"find_quest", "is_vpn_up"}
+        self.assertEqual(headset_calls, set(), "no headset-side call on unplug or replug")
+        self.assertIn("Headset back on USB while reconnecting — no new relay", logs)
+
+    def test_disconnect_headset_absent_skips_headset_steps(self):
+        adb = Mock()
+        manager = TetherManager(adb, gnirehtet_path="fake.jar")
+        manager._set_state(TetherState.CONNECTED)
+        manager.stats.device_serial = "S"
+        manager._kill_process = Mock()
+        logs = []
+        manager.set_callbacks(on_log=logs.append)
+
+        manager.disconnect(headset_present=False)
+
+        self.assertEqual(adb.mock_calls, [])
+        manager._kill_process.assert_called_once_with()
+        self.assertEqual(manager.stats.state, TetherState.IDLE)
+        self.assertIn("Headset absent — skipping headset-side cleanup", logs)
+
+    @patch("tether_manager.time.sleep", return_value=None)
+    def test_disconnect_with_headset_still_removes_reverse_tunnels(self, _sleep):
+        adb = Mock()
+        adb.find_serial.return_value = "S"
+        adb.is_vpn_down.return_value = True
+        manager = TetherManager(adb, gnirehtet_path="fake.jar")
+        manager._set_state(TetherState.CONNECTED)
+        manager.stats.device_serial = "S"
+        manager._kill_process = Mock()
+
+        manager.disconnect()
+
+        adb.remove_all_reverse_tunnels.assert_called_once_with("S")
+        manager._kill_process.assert_called_once_with()
+
+    def test_connect_while_reconnecting_returns_true_without_relay(self):
+        manager = TetherManager(Mock(), gnirehtet_path="fake.jar")
+        manager._set_state(TetherState.RECONNECTING)
+        manager._spawn_relay = Mock()
+        manager._start_split_relay = Mock()
+        manager._kill_stale_process = Mock()
+
+        self.assertTrue(manager.connect("S"))
+
+        manager._spawn_relay.assert_not_called()
+        manager._start_split_relay.assert_not_called()
+        manager._kill_stale_process.assert_not_called()
+        self.assertEqual(manager.stats.state, TetherState.RECONNECTING)
 
 
 if __name__ == "__main__":
