@@ -871,5 +871,33 @@ class EntryPoint(unittest.TestCase):
         self.assertEqual(json.loads(out), {"ok": True})
 
 
+class McpCommand(unittest.TestCase):
+    """`quest-tether mcp` (#75): starts the stdio server and builds no backend itself."""
+
+    def test_mcp_is_a_subcommand_without_json(self):
+        args = cli.build_parser().parse_args(["mcp"])
+        self.assertEqual(args.command, "mcp")
+        err = io.StringIO()
+        with redirect_stderr(err), self.assertRaises(SystemExit):
+            cli.build_parser().parse_args(["mcp", "--json"])
+
+    def test_mcp_runs_the_server_and_builds_no_backend(self):
+        import mcp_server
+
+        with patch.object(mcp_server, "serve", return_value=0) as serve, patch.object(
+            cli_commands, "make_backend"
+        ) as make:
+            code = cli.main(["mcp"])
+        self.assertEqual(code, 0)
+        serve.assert_called_once_with()
+        make.assert_not_called()
+
+    def test_the_server_exit_code_is_returned(self):
+        import mcp_server
+
+        with patch.object(mcp_server, "serve", return_value=3):
+            self.assertEqual(cli.main(["mcp"]), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

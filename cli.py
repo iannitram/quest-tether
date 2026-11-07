@@ -4,6 +4,7 @@
     python cli.py connect --hold
     python cli.py settings set crash_reports off
     python cli.py service status
+    python cli.py mcp                 # MCP server over stdio (no --json)
 
 Every command prints human-readable text by default and one JSON object with
 --json. Exit codes come from cli_format.exit_code: 0 ok, 1 failure, 2 bad usage.
@@ -84,6 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     gui = sub.add_parser("gui", help="start the desktop window")
     _add_json(gui)
+
+    sub.add_parser(
+        "mcp",
+        help="run the MCP server over stdio for Claude Code and other agents (#75)",
+    )
 
     return parser
 
@@ -246,6 +252,11 @@ def _run(args) -> int:
 
     if command == "gui":
         return _finish(cli_commands.gui(), args)
+    if command == "mcp":
+        # The server picks its own backend per call, so no backend is built here.
+        import mcp_server
+
+        return mcp_server.serve()
 
     backend = cli_commands.make_backend()
 
