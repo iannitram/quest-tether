@@ -24,7 +24,8 @@ def autostart_path(env: Mapping[str, str], home: str) -> str:
 
 def autostart_command(exe: str, frozen: bool, main_py: str) -> str:
     if frozen:
-        return f'"{exe}" --minimized'
+        # The frozen binary is the CLI (#74); the window is its gui command.
+        return f'"{exe}" gui --minimized'
     return f'"{exe}" "{main_py}" --minimized'
 
 

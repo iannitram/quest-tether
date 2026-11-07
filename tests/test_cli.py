@@ -864,6 +864,21 @@ class EntryPoint(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["serial"], SERIAL)
 
+    def test_gui_accepts_minimized(self):
+        args = cli.build_parser().parse_args(["gui", "--minimized"])
+        self.assertEqual(args.command, "gui")
+        self.assertTrue(args.minimized)
+        self.assertFalse(cli.build_parser().parse_args(["gui"]).minimized)
+
+    def test_the_packaged_autostart_command_is_a_valid_cli_line(self):
+        import shlex
+        from qt_platform.linux_paths import autostart_command
+
+        argv = shlex.split(autostart_command("/opt/qt/quest-tether", True, "/src/main.py"))
+        args = cli.build_parser().parse_args(argv[1:])
+        self.assertEqual(args.command, "gui")
+        self.assertTrue(args.minimized)
+
     def test_gui_json(self):
         with patch.object(cli_commands, "gui", return_value={"ok": True}):
             code, out, _ = self._run(["gui", "--json"], self.StubBackend())

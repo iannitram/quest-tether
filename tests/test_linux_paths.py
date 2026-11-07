@@ -55,8 +55,9 @@ class Autostart(unittest.TestCase):
                          "/home/u/.config/autostart/quest-tether.desktop")
 
     def test_command_frozen_binary(self):
+        # The packaged binary is the CLI (#74, #21): the window is its `gui` command.
         self.assertEqual(autostart_command("/opt/qt/quest-tether", True, "/src/main.py"),
-                         '"/opt/qt/quest-tether" --minimized')
+                         '"/opt/qt/quest-tether" gui --minimized')
 
     def test_command_from_source(self):
         self.assertEqual(autostart_command("/usr/bin/python3", False, "/src/main.py"),
