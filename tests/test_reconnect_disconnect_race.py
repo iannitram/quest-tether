@@ -329,5 +329,121 @@ class HealAfterStop(unittest.TestCase):
         self.assertNotEqual(m.stats.state, TetherState.CONNECTED)
 
 
+class OneReadProcessManager(TetherManager):
+    """A manager whose relay handle is there on the first read and gone on every read
+    after: disconnect() cleared it between two reads in another thread (#103)."""
+
+    _real_process = None
+    _reads = 0
+
+    @property
+    def _process(self):
+        if self._reads == 0:
+            self._reads += 1
+            return self._real_process
+        return None
+
+    @_process.setter
+    def _process(self, value):
+        self._real_process = value
+        self._reads = 0
+
+
+class RelayHandleReadOnce(unittest.TestCase):
+    """The health thread reads self._process once per check, so a disconnect() that
+    clears it mid-check cannot raise AttributeError there (#103)."""
+
+    def make(self):
+        m = OneReadProcessManager(FakeAdb(), gnirehtet_path="fake.jar")
+        m._process = FakeProc(7)
+        return m
+
+    def test_wait_until_listening_survives_a_cleared_relay_handle(self):
+        m = self.make()
+        with patch.object(TetherManager, "_port_open", return_value=True):
+            self.assertTrue(m._wait_until_listening(31416))
+
+    def test_is_relay_running_survives_a_cleared_relay_handle(self):
+        m = self.make()
+        self.assertTrue(m.is_relay_running())
+
+
+class StopLandsInEachWait(unittest.TestCase):
+    """Places where a stop lands and the next step must not run."""
+
+    @patch("tether_manager.time.sleep", return_value=None)
+    def test_a_stop_during_find_quest_spawns_nothing(self, _sleep):
+        h = Harness("split")
+        h.start_session()
+        m = h.manager
+        m._process = FakeProc(1)
+
+        def find_quest_then_stop():
+            h.adb.calls.append("find_quest")
+            m.disconnect(headset_present=False)
+            return {"serial": "quest-serial", "status": "device"}
+
+        h.adb.find_quest = find_quest_then_stop
+        m._attempt_reconnect("quest-serial")
+
+        self.assertEqual(h.spawned, [])
+        self.assertNotIn("start_gnirehtet_client", h.adb.calls)
+        self.assertEqual(m.stats.state, TetherState.IDLE)
+
+    def test_a_stop_while_the_headset_comes_back_spawns_nothing(self):
+        h = Harness("split")
+        h.start_session()
+        m = h.manager
+        quests = iter([None, {"serial": "quest-serial", "status": "device"}])
+        h.adb.find_quest = Mock(side_effect=lambda: next(quests))
+
+        def sleep(seconds):
+            if seconds == 1:  # the pause after the headset shows up again
+                m.disconnect(headset_present=False)
+
+        with patch("tether_manager.time.sleep", side_effect=sleep):
+            m._wait_for_device_and_reconnect("quest-serial")
+
+        self.assertEqual(h.spawned, [])
+        self.assertEqual(h.adb.find_quest.call_count, 2, "no second reconnect started")
+        self.assertEqual(m.stats.state, TetherState.IDLE)
+
+    @patch("tether_manager.time.sleep", return_value=None)
+    def test_a_stop_while_the_headset_is_hidden_starts_no_adb_restart(self, _sleep):
+        h = Harness("split")
+        h.start_session()
+        m = h.manager
+
+        def find_quest_then_stop():
+            h.adb.calls.append("find_quest")
+            m._running = False
+            return None
+
+        h.adb.find_quest = find_quest_then_stop
+
+        self.assertTrue(m._heal("quest-serial", Heal.RESTART_CLIENT))
+        self.assertEqual(h.adb.calls, ["find_quest"])
+
+    @patch("tether_manager.time.sleep", return_value=None)
+    def test_a_stop_during_the_slow_tun0_wait_starts_no_client(self, _sleep):
+        h = Harness("run")
+        h.start_session()
+        m = h.manager
+        checks = []
+
+        def vpn_check():
+            checks.append(1)
+            if len(checks) == 4:  # the check just before the re-issued client start
+                m.disconnect(headset_present=False)
+
+        h.adb.on_vpn_check = vpn_check
+        with patch.object(TetherManager, "_port_open", return_value=True):
+            m._attempt_reconnect("quest-serial")
+
+        self.assertNotIn("start_gnirehtet_client", h.adb.calls)
+        self.assertEqual(len(checks), 4, "the wait ends at the stop")
+        self.assertEqual(m.stats.state, TetherState.IDLE)
+
+
 if __name__ == "__main__":
     unittest.main()

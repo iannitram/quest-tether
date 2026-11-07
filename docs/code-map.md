@@ -1,6 +1,6 @@
 # Code map
 
-What each part owns, who calls whom, and how a Windows-only app becomes Windows + Linux + a Decky plugin (SPEC M6-M9), with a command line on top. Describes commit: `f86f36e` (2026-11-05). Checked against `main` on 2026-11-07: every module in the repo root, `qt_platform/` and `decky/` is listed below; 743 unit tests pass on Linux (with #62, after #86 and the MCP server, #75, and the disconnect race #103). Spec: [../SPEC.md](../SPEC.md). Background and measured facts: [notes/](notes/).
+What each part owns, who calls whom, and how a Windows-only app becomes Windows + Linux + a Decky plugin (SPEC M6-M9), with a command line on top. Describes commit: `f86f36e` (2026-11-05). Checked against `main` on 2026-11-07: every module in the repo root, `qt_platform/` and `decky/` is listed below; 773 unit tests pass on Linux (with #62, after #86 and the MCP server, #75, and the disconnect race #103). Spec: [../SPEC.md](../SPEC.md). Background and measured facts: [notes/](notes/).
 
 ## Layout
 
