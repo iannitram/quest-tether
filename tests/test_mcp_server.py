@@ -692,9 +692,7 @@ class ChildStdinTests(unittest.TestCase):
             proc.stdin.write(tool_call("status", None, 1) + "\n")
             proc.stdin.flush()
             time.sleep(0.5)  # the child is running now
-            proc.stdin.write(request("ping", None, 2) + "\n")
-            proc.stdin.close()
-            out, _ = proc.communicate(timeout=30)
+            out, _ = proc.communicate(request("ping", None, 2) + "\n", timeout=30)
         finally:
             proc.kill()
             proc.wait()
