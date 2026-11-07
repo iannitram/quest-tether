@@ -20,8 +20,10 @@ class ConnectFlowTests(unittest.TestCase):
         process = Mock()
         process.pid = 123
         process.poll.return_value = None
-        manager._process = process
-        manager._spawn_relay = Mock()
+        # The fake spawn hands over the relay, as the real one does: connect()
+        # kills a relay that is already running before it spawns (#107).
+        manager._spawn_relay = Mock(
+            side_effect=lambda serial: setattr(manager, "_process", process))
         manager.relay_mode = "run"  # run-mode spawn; split mode is in test_split_relay.py
         manager._kill_stale_process = Mock()
         manager.restore_wifi_if_flagged = Mock()
@@ -104,6 +106,7 @@ class ConnectFlowTests(unittest.TestCase):
 
     def test_health_loop_demotes_when_tunnel_disappears(self):
         manager = self.make_manager([])
+        manager._spawn_relay("quest-serial")  # a live relay, as connect() leaves it
         manager.adb.get_tun0_stats.return_value = None
         manager.adb.run_adb.return_value.returncode = 1
         manager.POST_CONNECT_COOLDOWN = 0
