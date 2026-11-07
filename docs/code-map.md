@@ -1,6 +1,6 @@
 # Code map
 
-What each part owns, who calls whom, and how a Windows-only app becomes Windows + Linux + a Decky plugin (SPEC M6-M9), with a command line on top. Describes commit: `f86f36e` (2026-11-05). Checked against `main` on 2026-11-07: every module in the repo root, `qt_platform/` and `decky/` is listed below; 479 unit tests pass on Linux. Spec: [../SPEC.md](../SPEC.md). Background and measured facts: [notes/](notes/).
+What each part owns, who calls whom, and how a Windows-only app becomes Windows + Linux + a Decky plugin (SPEC M6-M9), with a command line on top. Describes commit: `f86f36e` (2026-11-05). Checked against `main` on 2026-11-07: every module in the repo root, `qt_platform/` and `decky/` is listed below; 529 unit tests pass on Linux. Spec: [../SPEC.md](../SPEC.md). Background and measured facts: [notes/](notes/).
 
 ## Layout
 
@@ -18,7 +18,7 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `net_sync.py` | Copy the PC's Wi-Fi network to the headset: SSID, key and security from `qt_platform`, then `cmd wifi` on the headset. | wired | M5, M7 |
 | `first_run.py` | Pure: which tool (adb, relay, APK, Java on Windows) is missing, by name (#40). | CLI `doctor` only; the window's first-run check still has its own "ADB: Not Found" text (#10) | M9 |
 | `crash_scrub.py`, `crash_report.py`, `crash_queue.py`, `crash_hook.py` | Crash reporting (#30, #41-#45): scrub private details, build the report and zip, rate limit (5 a day) and offline queue (10), one sink for uncaught exceptions on any thread and in Tk, background upload to the bug drop; on/off setting. The drop address is written into `bug_drop_config.py` at build time from `CRAFT_BUG_DROP_BASE` / `CRAFT_BUG_DROP_TOKEN` (never committed). | wired (`main.py`, `qtetherd.py`, CLI `crash-queue`) | - |
-| `soak_report.py` | Pure: counts from an app log for the #3 soak (connects, drops, reconnects, refusals, disconnects, unrecovered drops, first and last timestamp). No throughput, memory or orphan figures yet. | no caller in the app and no command-line entry (only tests import it) | M3 |
+| `soak_report.py` | Pure parts: counts from an app log (connects, drops, reconnects, refusals, disconnects, unrecovered drops, first and last timestamp), a throughput accumulator (peak and integer average, empty gives 0), `mem_used_kb` from `/proc/meminfo`, the `ps` parser, the orphan count (relay processes not under a running app), and the record and report builders. The sampler (`run_sampler`, #3) polls `qtetherd` status and `ps` every interval and writes JSON lines; `report` summarizes them. Command line: `python3 soak_report.py sample --minutes 15 --out <file>` and `python3 soak_report.py report <file> [--log <app log>]`. Not in the `quest-tether` CLI. | sampler and report built (#3); the app does not call it; the 15-minute run is device work | M3 |
 | `main.py` | The desktop window (CustomTkinter), dashboard with the temperature colour, log panel, tray (pystray + Pillow), single-instance guard (through the platform layer), `--minimized`, crash hook install. On Linux it is a `qtetherd` client when the service answers; with no service it runs the core in-process. Windows always runs in-process. | wired | M4, M6 |
 | `qtetherd.py` | Linux user service that owns the one tether and answers JSON lines on `127.0.0.1:31417` (`status`, `connect`, `disconnect`, `wifi-sync`, `logs`, `settings-get`, `settings-set`; the relay's own port is 31416). `serve()` builds the one `ADBManager` + `TetherManager`; a second copy on the port prints one line and exits 1. `request()` is the client call. Clients: the Linux window, the Decky backend, the CLI. | wired | M7, M8 |
 | `cli.py` | The `quest-tether` argparse entry point (`python cli.py`; the packaged binary is not built yet, #74): one subcommand per feature, `--json` on every command, exit codes 0/1/2 (#74, #88). | merged; device check and packaging open (#74) | - |
@@ -99,7 +99,7 @@ flowchart LR
 - CustomTkinter, pystray, Pillow (already used).
 - flat-to-3d (the owner's repo): the heal ladder and flap breaker in `heal.py` (#46, ported from flat-to-3d#164).
 - quest-vd-wired (Apache-2.0): the awake-gated liveness policy in `heal_policy.py` (#65, credited in a source comment) and the stop-VPN-first Disconnect order (#64). `NOTICE` credits #65 by #92; #64's line comes with its handshake code.
-- `soak_report.py` (#3) is our own log counter; flat-to-3d's soak summary (throughput, memory) was suggested on #3 but is not ported.
+- `soak_report.py` (#3) is our own Python: the log counter and the sampler. Its throughput accumulator and memory figure follow the shape of flat-to-3d's soak summary (`inject/src/stats.rs`, flat-to-3d#158 and #177), written fresh; no code was copied.
 - Decky Loader's plugin template (`decky-plugin-template`, `@decky/ui`, `@decky/api`) for the plugin's frontend build.
 
 ## Dev stages to 1.0
@@ -112,7 +112,7 @@ Where it stands (2026-11-07): Dev Loop. The Linux platform, the service, the Dec
 4. Linux service and Game Mode. Done: `qtetherd` (#35-#38; #18 is the parent), Decky backend and panel (#19, #20), udev rule and guide (#17). Open: native relay proven on SteamOS without Java (#16), the Game Mode check of the panel (M8).
 5. Reconnect and liveness. Done: heal ladder (#46), refused client starts (#63), fail-closed stale-relay check (#67), one reconnect per outage (#79). Open: through the service, an unplug runs the headset-side disconnect against a missing headset, and the replug is a fresh connect not counted as a reconnect (#86); wire in the merged helpers: relay-log client signal (#62), stop the VPN first and verify it closed (#64), awake-gated liveness (#65); separate relay with a port probe (#66).
 6. Command line and agents (scope added by the owner, 2026-11-04). Done: CLI merged (#88). Open: try it on the headset and package it (#74), the MCP server on the same command layer (#75).
-7. Device checks before 1.0. Open: the multi-hour soak on both OSes (#3; summary tool merged in #89), the Windows questions (needs a Windows PC with the headset): USB audio chain (#7), audio output and display layout revert (#8), Rust relay on Windows (#9).
+7. Device checks before 1.0. Open: the multi-hour soak on both OSes (#3; the sampler and report are in `soak_report.py`, the runs are device work), the Windows questions (needs a Windows PC with the headset): USB audio chain (#7), audio output and display layout revert (#8), Rust relay on Windows (#9).
 
 8. Design pass (R04 in my pipeline), the last stage before 1.0: the window and the Decky panel are checked against the shared design system and the differences filed as `design-pass` issues. The CLI and the service have no UI and skip it.
 
