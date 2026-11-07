@@ -23,7 +23,9 @@ from adb_manager import ADBManager
 import net_sync
 import qt_platform
 import heal_policy
+import relay_pump
 from heal import Heal, Healer
+from relay_log import apply_change, parse_client_change
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +50,19 @@ ACTIVE_CONNECT_STATES = (
 )
 
 
-def _state_for_tunnel(tun0_present: bool) -> TetherState:
-    """Return the user-visible state supported by the current tunnel check."""
-    return TetherState.CONNECTED if tun0_present else TetherState.STARTING
+def _state_for_tunnel(tun0_present: bool, relay_clients: Optional[int] = None) -> TetherState:
+    """Return the user-visible state for one tunnel check (#1, #62).
+
+    tun0 is always required. Once the relay has printed a client line this spawn,
+    relay_clients is its count, and 0 is not Connected either: the headset side has
+    dropped while tun0 may still show. None means no client line yet this spawn, so
+    tun0 alone decides. A relay that never prints client lines still reaches Connected.
+    """
+    if not tun0_present:
+        return TetherState.STARTING
+    if relay_clients is not None and relay_clients <= 0:
+        return TetherState.STARTING
+    return TetherState.CONNECTED
 
 
 @dataclass
@@ -72,6 +84,8 @@ class TetherStats:
     battery_level: str = ""
     battery_status: str = ""
     battery_temp_c: Optional[float] = None
+    # Connected clients the relay has reported this spawn (#62). None: no client line yet.
+    relay_clients: Optional[int] = None
 
 
 class TetherManager:
@@ -145,6 +159,12 @@ class TetherManager:
         self._last_wifi_check = 0.0
         self._wifi_attempts: Dict[str, int] = {}  # PC SSID -> failed attempts
         self._relay_log = None
+        # Relay output (#62): the pump thread, the client set, and a generation that
+        # changes on every spawn and kill, so a pump left from an old relay is ignored.
+        self._relay_lock = threading.Lock()
+        self._relay_gen = 0
+        self._relay_clients_set: frozenset = frozenset()
+        self._pump_thread: Optional[threading.Thread] = None
         # 'split' (relay alone + our client start) or 'run' (gnirehtet run, old path)
         self._relay_mode = os.environ.get("QT_RELAY_MODE", "split")
         if self._relay_mode not in self.RELAY_MODES:
@@ -291,6 +311,8 @@ class TetherManager:
         if os.path.isfile(apk_path):
             env["GNIREHTET_APK"] = apk_path
 
+        # The old pump still owns the old log handle until it reaches EOF.
+        self._join_relay_pump()
         try:
             os.makedirs(self._data_dir, exist_ok=True)
             if self._relay_log:
@@ -303,19 +325,70 @@ class TetherManager:
                 f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} relay start {serial} ===\n".encode()
             )
             self._relay_log.flush()
-            out = self._relay_log
+            log = self._relay_log
         except OSError:
-            out = subprocess.DEVNULL
+            log = None  # no copy in relay.log; the pipe is still drained (#62)
 
+        gen = self._reset_relay_clients()
         self._process = subprocess.Popen(
             cmd,
-            stdout=out,
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             creationflags=self.platform.no_window_flags(),
             env=env,
         )
         self.stats.relay_pid = self._process.pid
+        self._start_relay_pump(self._process, log, gen)
         return True
+
+    # --- Relay output and client count (#62) ---
+
+    def _reset_relay_clients(self) -> int:
+        """Forget the client set of the relay that ran, and retire its pump.
+
+        Bumps the generation, so the old pump's later lines are ignored. Returns the
+        generation for the next relay's pump.
+        """
+        with self._relay_lock:
+            self._relay_gen += 1
+            self._relay_clients_set = frozenset()
+            self.stats.relay_clients = None
+            return self._relay_gen
+
+    def _start_relay_pump(self, proc, log, gen: int):
+        """Drain proc's output on a daemon thread: each line to relay.log, client lines to the count."""
+        self._pump_thread = threading.Thread(
+            target=relay_pump.pump_lines,
+            args=(proc.stdout, log, lambda text: self._on_relay_line(gen, text)),
+            name="relay-output",
+            daemon=True,
+        )
+        self._pump_thread.start()
+
+    def _join_relay_pump(self, timeout: float = 1.0):
+        """Wait, bounded, for the pump to reach EOF, so relay.log holds every line the relay wrote."""
+        thread = self._pump_thread
+        self._pump_thread = None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout)
+
+    def _on_relay_line(self, gen: int, text: str):
+        """One line from the relay's output. Only the current relay's lines count."""
+        change = parse_client_change(text)
+        if change is None:
+            return
+        with self._relay_lock:
+            if gen != self._relay_gen:
+                return
+            self._relay_clients_set = apply_change(self._relay_clients_set, change)
+            count = len(self._relay_clients_set)
+            self.stats.relay_clients = count
+        action, client_id = change
+        logger.info(f"Relay client #{client_id} {action} — {count} connected")
+
+    def _tunnel_state(self, tun0_present: bool) -> TetherState:
+        """The state for a tunnel check: tun0 plus the relay's client count (#62)."""
+        return _state_for_tunnel(tun0_present, self.stats.relay_clients)
 
     def _relay_log_last_line(self) -> str:
         """Last non-empty line the current relay wrote to relay.log; "" if none.
@@ -393,6 +466,7 @@ class TetherManager:
 
         if not self._wait_until_listening(port):
             if self._process.poll() is not None:
+                self._join_relay_pump()  # relay.log must hold its last line first
                 last = self._relay_log_last_line()
                 reason = "relay exited at startup: " + (
                     last or "no output in relay.log"
@@ -438,6 +512,7 @@ class TetherManager:
             return
         pid = self._process.pid
         self._log(f"Stopping gnirehtet (PID {pid})...")
+        self._reset_relay_clients()
         try:
             self._process.terminate()
             self._process.wait(timeout=3)
@@ -450,6 +525,7 @@ class TetherManager:
                 self.platform.kill(pid)
         self._process = None
         self.stats.relay_pid = None
+        self._join_relay_pump()
 
     def force_kill(self):
         """Immediate process tree kill. Used on app quit — no logging, no ADB cleanup.
@@ -474,11 +550,19 @@ class TetherManager:
                 pass
         # Another thread may clear self._process during the STOP; use our copy.
         pid = proc.pid
+        self._reset_relay_clients()
         try:
             self.platform.kill_tree(pid)
             proc.wait(timeout=5)
         except Exception:
             pass
+        self._join_relay_pump(timeout=0.5)
+        if self._relay_log:
+            try:
+                self._relay_log.close()
+            except Exception:
+                pass
+            self._relay_log = None
         self._process = None
         # Brief pause to let Windows release file handles
         time.sleep(0.5)
@@ -564,7 +648,7 @@ class TetherManager:
         self.stats.battery_status = details.get("battery_status", "")
         self._last_battery_time = 0.0  # read the temperature on the first health cycle
 
-        self._set_state(_state_for_tunnel(tun0_present))
+        self._set_state(self._tunnel_state(tun0_present))
         self._start_time = time.time()
         self._log("Tethering active!")
 
@@ -736,7 +820,7 @@ class TetherManager:
 
     def _check_tunnel(self, serial: str, tun_ok: bool, now: float):
         """Relay alive: update the state and run the tunnel-missing branch (#65)."""
-        tunnel_state = _state_for_tunnel(tun_ok)
+        tunnel_state = self._tunnel_state(tun_ok)
         if self.stats.state != tunnel_state:
             self._set_state(tunnel_state)
         if tun_ok:
@@ -888,14 +972,20 @@ class TetherManager:
         if start_refused:
             return False
 
+        tun0_up = False
         for _ in range(6):
             time.sleep(1.5)
-            if self.adb.is_vpn_up(serial):
+            tun0_up = self.adb.is_vpn_up(serial)
+            if tun0_up and self._tunnel_state(True) is TetherState.CONNECTED:
                 self._log("Tunnel restored")
                 self._reconnect_attempts = 0
                 self._set_state(TetherState.CONNECTED)
                 self._prev_stat_time = 0  # don't compute a rate across the gap
                 return False
+        if tun0_up:
+            # tun0 is up but the relay has counted no client (#62). The health loop
+            # promotes it once a client shows.
+            self._set_state(TetherState.STARTING)
         return False
 
     def _update_stats(self, serial: str) -> bool:
@@ -1098,22 +1188,29 @@ class TetherManager:
 
         # Wait for tun0; re-issue the client start once if the first try was missed
         time.sleep(2.0)
+        tun0_up = False
         for i in range(10):
-            if self.adb.is_vpn_up(actual_serial):
+            tun0_up = self.adb.is_vpn_up(actual_serial)
+            if tun0_up and self._tunnel_state(True) is TetherState.CONNECTED:
                 self._set_state(TetherState.CONNECTED)
                 self._reconnect_attempts = 0
                 self._healer.reset_after_reconnect()
                 self._prev_stat_time = 0
                 self._log("Reconnected!")
                 return
-            if i == 4:
+            if i == 4 and not tun0_up:
                 self._log("tun0 slow — re-issuing client start")
                 if not self.adb.start_gnirehtet_client(actual_serial, self.RELAY_PORT):
                     self._log_client_start_refused()
                     return
             time.sleep(1.5)
 
-        self._log("Reconnect: tun0 not detected — will retry")
+        if tun0_up:
+            # tun0 is up but no client is counted yet (#62): not Connected until one shows.
+            self._set_state(TetherState.STARTING)
+            self._log("Reconnect: tun0 up, no relay client yet — waiting for one")
+        else:
+            self._log("Reconnect: tun0 not detected — will retry")
 
     def _wait_for_device_and_reconnect(self, serial: str):
         """Wait for Quest to reappear on USB, then reconnect."""

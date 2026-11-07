@@ -89,6 +89,7 @@ class Status(unittest.TestCase):
                 "uptime_s": 125.0,
                 "battery_level": "81",
                 "reconnects": 2,
+                "relay_clients": None,
                 "temp_c": 37.5,
                 "zone": "green",
                 "device_serial": "1WMHH0000",
