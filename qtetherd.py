@@ -192,7 +192,9 @@ def handle_request(tether, find_serial, req, lock=None) -> dict:
             return {"ok": False, "error": tether.stats.last_error or "connect failed"}
     if cmd == "disconnect":
         with lock:
-            tether.disconnect()
+            # No headset on USB: skip the headset-side steps, which would only
+            # wait on a missing device (#86).
+            tether.disconnect(headset_present=find_serial() is not None)
         return {"ok": True}
     if cmd == "wifi-sync":
         with lock:
@@ -207,7 +209,13 @@ def handle_request(tether, find_serial, req, lock=None) -> dict:
 
 
 def _monitor_callbacks(tether):
-    """Connect/disconnect callbacks for USB monitoring when auto-reconnect is on."""
+    """Connect/disconnect callbacks for USB monitoring when auto-reconnect is on.
+
+    The health loop is the one recovery path (#86). An unplug never runs the
+    headset-side disconnect, and a replug while the tether is active or
+    reconnecting never starts a second relay. So a drop counts once, in
+    _attempt_reconnect, and the health loop picks the headset up again.
+    """
 
     def on_connected(device_info):
         if not isinstance(device_info, dict):
@@ -218,12 +226,27 @@ def _monitor_callbacks(tether):
                 return
             if device_info.get("status", "device") != "device":
                 return
+            state = tether.stats.state
+            if state in ACTIVE_CONNECT_STATES:
+                tether.note_usb_event(
+                    f"Headset back on USB while {state.value} — no new relay"
+                )
+                return
             tether.connect(serial)
 
     def on_disconnected():
         with _TETHER_LOCK:
-            if tether.auto_reconnect:
-                tether.disconnect()
+            if not tether.auto_reconnect:
+                return
+            state = tether.stats.state
+            if state in ACTIVE_CONNECT_STATES:
+                tether.note_usb_event(
+                    f"USB lost while {state.value} — health monitor will reconnect"
+                )
+                return
+            if tether.is_relay_running():
+                # Nothing to recover: stop the leftover relay, headset untouched.
+                tether.disconnect(headset_present=False)
 
     return on_connected, on_disconnected
 

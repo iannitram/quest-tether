@@ -38,8 +38,13 @@ class TetherState(Enum):
 
 # States in which a connect request must not start another relay. Both the
 # service handler and the USB monitor call TetherManager.connect(), so the
-# guard lives here to cover both paths.
-ACTIVE_CONNECT_STATES = (TetherState.STARTING, TetherState.CONNECTED)
+# guard lives here to cover both paths. A reconnect in progress owns the relay
+# (#86): a replug during it must not start a second one or count as a reconnect.
+ACTIVE_CONNECT_STATES = (
+    TetherState.STARTING,
+    TetherState.CONNECTED,
+    TetherState.RECONNECTING,
+)
 
 
 def _state_for_tunnel(tun0_present: bool) -> TetherState:
@@ -483,6 +488,10 @@ class TetherManager:
         """Check if the gnirehtet process is alive."""
         return self._process is not None and self._process.poll() is None
 
+    def note_usb_event(self, message: str):
+        """Log a USB event the service saw (#86). Changes no state."""
+        self._log(message)
+
     # --- Connect / Disconnect ---
 
     def connect(self, serial: str) -> bool:
@@ -563,13 +572,17 @@ class TetherManager:
         self._start_health_monitor(serial)
         return True
 
-    def disconnect(self):
+    def disconnect(self, headset_present: bool = True):
         """Graceful shutdown, VPN first (#64; the order is from quest-vd-wired).
 
         1. Stop the VPN on the headset and wait (bounded) for tun0 to go.
         2. Put Wi-Fi back and verify it.
         3. Always, even if 1 or 2 failed: remove the reverse tunnels, then kill
            the relay. The relay dies last.
+
+        With headset_present=False (the cable is out, #86) steps 1 to 3 that
+        talk to the headset are skipped, so no adb call waits on a missing
+        device. Only the health thread and the relay are stopped.
         """
         self._running = False
         self._set_state(TetherState.STOPPING)
@@ -582,12 +595,14 @@ class TetherManager:
         serial = self.stats.device_serial
 
         try:
-            if serial:
+            if not headset_present:
+                self._log("Headset absent — skipping headset-side cleanup")
+            elif serial:
                 self._stop_vpn_on_headset(serial)
         except Exception as e:
             self._log(f"Headset-side stop failed: {e}")
         finally:
-            if serial:
+            if headset_present and serial:
                 try:
                     self.adb.remove_all_reverse_tunnels(serial)
                 except Exception as e:

@@ -99,10 +99,12 @@ class Serve(unittest.TestCase):
 
         adb.start_monitoring.assert_called_once()
         callbacks = adb.start_monitoring.call_args.kwargs
+        tether.stats.state = TetherState.IDLE
         callbacks["on_connected"]({"serial": "HEADSET", "status": "device"})
         tether.connect.assert_called_once_with("HEADSET")
+        tether.stats.state = TetherState.CONNECTED
         callbacks["on_disconnected"]()
-        tether.disconnect.assert_called_once_with()
+        tether.disconnect.assert_not_called()
 
     def test_auto_reconnect_off_does_not_start_usb_monitoring(self):
         adb, _ = self._serve(False)
@@ -120,6 +122,68 @@ class Serve(unittest.TestCase):
 
         tether._spawn_relay.assert_not_called()
         tether._kill_stale_process.assert_not_called()
+
+    def _real_tether(self, state):
+        """A real core with a mock adb: any headset call shows up in adb.mock_calls."""
+        adb = Mock()
+        tether = TetherManager(adb, gnirehtet_path="fake.jar")
+        tether._set_state(state)
+        tether.stats.device_serial = "HEADSET"
+        tether.stats.reconnect_count = 1
+        tether._kill_process = Mock()
+        tether._spawn_relay = Mock()
+        tether._kill_stale_process = Mock()
+        logs = []
+        tether.set_callbacks(on_log=logs.append)
+        return adb, tether, logs
+
+    def test_monitor_callback_starts_no_second_relay_while_reconnecting(self):
+        adb, tether, logs = self._real_tether(TetherState.RECONNECTING)
+        on_connected, _ = qtetherd._monitor_callbacks(tether)
+
+        on_connected({"serial": "HEADSET", "status": "device"})
+
+        tether._spawn_relay.assert_not_called()
+        tether._kill_stale_process.assert_not_called()
+        self.assertEqual(adb.mock_calls, [])
+        self.assertEqual(tether.stats.state, TetherState.RECONNECTING)
+        self.assertEqual(tether.stats.reconnect_count, 1, "a replug is not a reconnect")
+        self.assertIn("Headset back on USB while reconnecting — no new relay", logs)
+
+    def test_unplug_while_connected_leaves_recovery_to_the_health_loop(self):
+        adb, tether, logs = self._real_tether(TetherState.CONNECTED)
+        _, on_disconnected = qtetherd._monitor_callbacks(tether)
+
+        on_disconnected()
+
+        self.assertEqual(adb.mock_calls, [], "no headset-side call on unplug")
+        tether._kill_process.assert_not_called()
+        self.assertEqual(tether.stats.state, TetherState.CONNECTED)
+        self.assertEqual(tether.stats.reconnect_count, 1, "stats survive the unplug")
+        self.assertIn("USB lost while connected — health monitor will reconnect", logs)
+
+    def test_unplug_stops_an_orphan_relay_without_touching_the_headset(self):
+        adb, tether, logs = self._real_tether(TetherState.ERROR)
+        tether._process = Mock(pid=7)
+        tether._process.poll.return_value = None
+        _, on_disconnected = qtetherd._monitor_callbacks(tether)
+
+        on_disconnected()
+
+        self.assertEqual(adb.mock_calls, [])
+        tether._kill_process.assert_called_once_with()
+        self.assertEqual(tether.stats.state, TetherState.IDLE)
+        self.assertIn("Headset absent — skipping headset-side cleanup", logs)
+
+    def test_unplug_while_idle_does_nothing(self):
+        adb, tether, _ = self._real_tether(TetherState.IDLE)
+        tether._process = None
+        _, on_disconnected = qtetherd._monitor_callbacks(tether)
+
+        on_disconnected()
+
+        self.assertEqual(adb.mock_calls, [])
+        tether._kill_process.assert_not_called()
 
 
 if __name__ == "__main__":
