@@ -4,6 +4,7 @@ python -m unittest discover -s tests"""
 import io
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -225,17 +226,43 @@ class BackendSelection(unittest.TestCase):
         backend = cli_commands.make_backend(platform=platform, request=request)
         self.assertIsInstance(backend, cli_commands.LocalBackend)
 
-    def test_plain_oserror_falls_back_in_process(self):
+    def test_timeout_falls_back_in_process(self):
         platform = FakePlatform(tempfile.mkdtemp())
-        request = FakeRequest(error=OSError("no service"))
+        request = FakeRequest(error=socket.timeout("slow"))
         backend = cli_commands.make_backend(platform=platform, request=request)
         self.assertIsInstance(backend, cli_commands.LocalBackend)
 
-    def test_a_malformed_answer_is_not_called_no_service(self):
+    def test_silent_service_falls_back_in_process(self):
+        platform = FakePlatform(tempfile.mkdtemp())
+        request = FakeRequest(error=ConnectionError("no answer"))
+        backend = cli_commands.make_backend(platform=platform, request=request)
+        self.assertIsInstance(backend, cli_commands.LocalBackend)
+
+    def test_reset_connection_falls_back_in_process(self):
+        platform = FakePlatform(tempfile.mkdtemp())
+        request = FakeRequest(error=ConnectionResetError("reset"))
+        backend = cli_commands.make_backend(platform=platform, request=request)
+        self.assertIsInstance(backend, cli_commands.LocalBackend)
+
+    def test_other_oserror_keeps_the_service_path(self):
+        # Not "no service": the command reports the socket error instead of
+        # starting a second core.
+        platform = FakePlatform(tempfile.mkdtemp())
+        request = FakeRequest(error=OSError("no service"))
+        backend = cli_commands.make_backend(platform=platform, request=request)
+        self.assertIsInstance(backend, cli_commands.ServiceBackend)
+        result = backend.status()
+        self.assertFalse(result["ok"])
+        self.assertIn("service not reachable", result["error"])
+
+    def test_a_malformed_answer_keeps_the_service_path(self):
         platform = FakePlatform(tempfile.mkdtemp())
         request = FakeRequest(error=ValueError("bad json"))
-        with self.assertRaises(ValueError):
-            cli_commands.make_backend(platform=platform, request=request)
+        backend = cli_commands.make_backend(platform=platform, request=request)
+        self.assertIsInstance(backend, cli_commands.ServiceBackend)
+        result = backend.status()
+        self.assertEqual(result["ok"], False)
+        self.assertIn("bad service reply", result["error"])
 
 
 class ServicePath(unittest.TestCase):

@@ -424,7 +424,14 @@ class QuestTetherApp(ctk.CTk):
         """The service's status reply, or None when qtetherd did not answer.
 
         `_service_refused` says whether the port was actively refused (no
-        service) or merely slow/busy; only a refusal justifies falling back.
+        service) or merely slow/busy. Once the window is running, only a
+        refusal justifies falling back (`_reprobe_service`).
+
+        At start-up the rule is wider, and it is not the CLI's rule
+        (cli_commands.make_backend, #74): the window needs a status reply to
+        draw its dashboard, so any failed start-up probe, a slow service
+        included, runs the core in-process, as docs/code-map.md records.
+        Changing that is the owner's call (#74).
         """
         self._service_refused = False
         try:
