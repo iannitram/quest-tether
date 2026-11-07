@@ -84,6 +84,18 @@ class LinuxPlatform(Platform):
     def relay_command(self, tools_dir: str, serial: str) -> List[str]:
         return linux_paths.relay_command(tools_dir, serial)
 
+    def relay_server_command(self, tools_dir: str, port: int) -> List[str]:
+        return linux_paths.relay_server_command(tools_dir, port)
+
+    def port_holders(self, port: int) -> List[Tuple[int, bool]]:
+        out = _run(["ss", "-ltnp"])
+        if not out:
+            return []
+        return [
+            (pid, cmdline_mentions_gnirehtet(_read_cmdline(pid)))
+            for pid in parse_ss_pids(out, port)
+        ]
+
     def relay_candidates(self) -> List[Tuple[str, bool]]:
         return [("gnirehtet", False)]
 

@@ -12,6 +12,11 @@ def relay_command(tools_dir: str, serial: str) -> List[str]:
     return [posixpath.join(tools_dir, "gnirehtet"), "run", serial]
 
 
+def relay_server_command(tools_dir: str, port: int) -> List[str]:
+    """The native relay alone, listening on port (split mode, #66)."""
+    return [posixpath.join(tools_dir, "gnirehtet"), "relay", "-p", str(port)]
+
+
 def autostart_path(env: Mapping[str, str], home: str) -> str:
     base = env.get("XDG_CONFIG_HOME") or posixpath.join(home, ".config")
     return posixpath.join(base, "autostart", "quest-tether.desktop")
