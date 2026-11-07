@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import socket
+import signal
 import socketserver
 import sys
 import threading
@@ -32,6 +33,13 @@ HOST = "127.0.0.1"
 PORT = 31417
 HANDLER_TIMEOUT = 10
 MAX_LOG_LINES = 1000
+# Longest a SIGTERM stop may run the normal disconnect (#110). The unit's
+# TimeoutStopSec is a little longer, so systemd never kills us mid-stop.
+STOP_CAP_SECONDS = 20.0
+# How long the stop waits for the shared lock before disconnecting without it
+# (#110). A running connect holds the lock for up to about 30 s, and the stop
+# must not sit behind it.
+STOP_LOCK_WAIT_SECONDS = 2.0
 
 log = logging.getLogger(__name__)
 
@@ -309,8 +317,71 @@ def setup_logging() -> str:
     return log_path
 
 
-def serve(host: str = HOST, port: int = PORT) -> None:
-    """Run the service until stopped."""
+def stop_tether(
+    tether, find_serial: Callable[[], Any], lock=None, cap: float = STOP_CAP_SECONDS
+) -> bool:
+    """Run the normal disconnect (stop intent, Wi-Fi restore) within cap seconds (#110).
+
+    The disconnect runs on a daemon thread, so a stuck adb call cannot hold the
+    service past the cap. It waits at most STOP_LOCK_WAIT_SECONDS for the same
+    lock the request handlers take. If a connect still holds it, the disconnect
+    runs without the lock: the process is exiting, and disconnect() clears the
+    running flag so the connect stops at its next check. The lock is only
+    released when the stop took it. Returns True when the disconnect finished in
+    time.
+    """
+    lock = lock or _TETHER_LOCK
+    done = threading.Event()
+
+    def work() -> None:
+        got_lock = False
+        try:
+            got_lock = lock.acquire(timeout=STOP_LOCK_WAIT_SECONDS)
+            if not got_lock:
+                log.warning("stop: another request holds the lock; disconnecting anyway")
+            tether.disconnect(headset_present=find_serial() is not None)
+        except Exception:
+            log.exception("disconnect on stop failed")
+        finally:
+            if got_lock:
+                lock.release()
+            done.set()
+
+    threading.Thread(target=work, name="qtetherd-stop", daemon=True).start()
+    if done.wait(cap):
+        return True
+    log.warning("stop: disconnect did not finish within %g s; exiting anyway", cap)
+    return False
+
+
+def _install_stop_handler(
+    tether, find_serial: Callable[[], Any], server, cap: float = STOP_CAP_SECONDS
+) -> None:
+    """Make SIGTERM run stop_tether, then end serve_forever() (#110).
+
+    A second SIGTERM during the stop does nothing, so one disconnect runs.
+    """
+    stopping = threading.Event()
+
+    def on_sigterm(signum, frame) -> None:
+        if stopping.is_set():
+            return
+        stopping.set()
+        log.info("SIGTERM: stopping the tether before exit")
+        stop_tether(tether, find_serial, cap=cap)
+        # shutdown() waits for serve_forever(), which is the thread running
+        # this handler, so it must run on another thread.
+        threading.Thread(target=server.shutdown, name="qtetherd-shutdown", daemon=True).start()
+
+    signal.signal(signal.SIGTERM, on_sigterm)
+
+
+def serve(host: str = HOST, port: int = PORT, stop_on_sigterm: bool = False) -> None:
+    """Run the service until stopped.
+
+    stop_on_sigterm installs the SIGTERM stop (#110). Only the program's main()
+    asks for it, so tests that call serve() keep the process's signals.
+    """
     adb = ADBManager()
     tether = TetherManager(adb)
     # Bind before touching the headset: a second copy must exit without
@@ -325,6 +396,8 @@ def serve(host: str = HOST, port: int = PORT) -> None:
     if tether.auto_reconnect:
         on_connected, on_disconnected = _monitor_callbacks(tether)
         adb.start_monitoring(on_connected=on_connected, on_disconnected=on_disconnected)
+    if stop_on_sigterm:
+        _install_stop_handler(tether, adb.find_serial, server)
     server.serve_forever()
 
 
@@ -340,6 +413,11 @@ def request(
     return json.loads(line)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """The program: logs and crash hook, then serve with the SIGTERM stop (#110)."""
     crash_report.install(log_path=setup_logging())
-    serve()
+    serve(stop_on_sigterm=True)
+
+
+if __name__ == "__main__":
+    main()
