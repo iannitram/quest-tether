@@ -4,6 +4,13 @@ Description=Quest Tether service
 [Service]
 Type=simple
 ExecStart=%h/.local/share/quest-tether/qtetherd
+# SIGTERM makes qtetherd run the normal disconnect (headset VPN off, Wi-Fi
+# back, relay stopped) before it exits (#110). Only the main process gets
+# SIGTERM, so adb and the relay are still up while that runs; the rest of the
+# group is killed after the main process exits. The timeout is the disconnect
+# cap (20 s) plus a margin.
+KillMode=mixed
+TimeoutStopSec=30
 Restart=on-failure
 RestartSec=5
 

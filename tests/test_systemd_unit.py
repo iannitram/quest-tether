@@ -30,6 +30,13 @@ class UserUnit(unittest.TestCase):
         self.assertEqual(svc["Restart"], "on-failure")
         self.assertEqual(svc["RestartSec"], "5")
 
+    def test_sigterm_stop_gets_the_main_process_only_and_a_timeout_past_the_cap(self):
+        """SIGTERM runs the disconnect in qtetherd (#110): KillMode=mixed sends it to the main process only, and TimeoutStopSec is the 20 s cap plus a margin."""
+        svc = unit()["Service"]
+        self.assertEqual(svc["KillMode"], "mixed")
+        self.assertEqual(svc["TimeoutStopSec"], "30")
+        self.assertNotIn("ExecStop", svc)
+
     def test_starts_at_login_of_the_user_manager(self):
         self.assertEqual(unit()["Install"]["WantedBy"], "default.target")
 
