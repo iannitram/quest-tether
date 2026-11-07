@@ -171,6 +171,7 @@ def handle_request(tether, find_serial, req, lock=None) -> dict:
             "uptime_s": s.uptime_seconds,
             "battery_level": s.battery_level,
             "reconnects": s.reconnect_count,
+            "relay_clients": s.relay_clients,
             "temp_c": s.battery_temp_c,
             "zone": temperature_zone(s.battery_temp_c),
             "device_serial": s.device_serial,

@@ -2,8 +2,10 @@
 Quest client ourselves. Fakes only (no process, socket or headset): python -m unittest discover -s tests
 """
 
+import io
 import itertools
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -94,10 +96,9 @@ class SplitRelayTests(unittest.TestCase):
 
         def start(cmd, **kwargs):
             self.popen_cmds.append(cmd)
-            out = kwargs.get("stdout")
-            if output and hasattr(out, "write"):
-                out.write(output)
-                out.flush()
+            # The relay's output comes down a pipe now (#62); the pump copies it to relay.log.
+            if kwargs.get("stdout") == subprocess.PIPE:
+                self.proc.stdout = io.BytesIO(output)
             return self.proc
 
         popen = patch("tether_manager.subprocess.Popen", side_effect=start)
