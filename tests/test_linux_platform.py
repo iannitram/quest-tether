@@ -225,10 +225,6 @@ class PcWifi(unittest.TestCase):
             self.assertIsNone(LinuxPlatform().pc_wifi())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PortHolders(unittest.TestCase):
     def setUp(self):
         p = mock.patch.object(
@@ -253,3 +249,7 @@ class PortHolders(unittest.TestCase):
     def test_no_holders_when_ss_fails(self):
         with mock.patch.object(linux, "_run", return_value=""):
             self.assertEqual(LinuxPlatform().port_holders(31416), [])
+
+
+if __name__ == "__main__":
+    unittest.main()
