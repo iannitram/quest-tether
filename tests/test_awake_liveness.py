@@ -123,13 +123,15 @@ class AsleepAndAwake(LivenessHarness):
             Heal.RESTART_CLIENT, Heal.RESTART_ADB_THEN_CLIENT, Heal.FULL_RECONNECT,
         ])
 
-    def test_a_missing_headset_reading_is_unknown_and_causes_no_heal(self):
+    def test_an_unplugged_headset_with_no_reading_gets_no_restart_and_no_error(self):
         self.awake_at = lambda t: None
         self.tun_up_at = lambda t: False
+        self.adb.find_quest.return_value = None   # not in the device list: #86 owns it
 
-        self.run_until(300)
+        self.run_until(600)
 
         self.assertTrue(self.adb.is_headset_awake.called, "the headset should still be asked")
+        self.assertTrue(self.adb.find_quest.called, "the device list decides once the bound has passed")
         self.assertEqual(self.heals, [])
         self.assertFalse(self.manager._healer.tripped)
         self.assertNotIn(TetherState.ERROR, self.states)
@@ -178,22 +180,49 @@ class AsleepAndAwake(LivenessHarness):
         # starts at 10 s and heals one grace later, not at 10 s.
         self.assertEqual(self.heal_times()[0], 20)
 
-    def test_an_awake_reading_then_no_reading_causes_no_heal(self):
+    def test_an_awake_reading_then_no_reading_does_not_reuse_the_stale_awake_clock(self):
         self.awake_at = lambda t: True if t < 20 else None
         self.tun_up_at = lambda t: False
+        self.adb.find_quest.return_value = None   # unplugged after the awake reading
         self.manager.HEAL_FINAL_RESTARTS = 99
 
         self.run_until(300)
 
         self.assertEqual(self.heal_times(), [10], "only the heal before the readings stopped")
 
-    def test_no_reading_from_the_start_after_awake_reading_blocks_restart_due(self):
-        self.awake_at = lambda t: True if t < 5 else None   # awake once, then unknown
+    def test_a_listed_headset_with_no_reading_gets_an_adb_restart_after_the_bound(self):
+        self.awake_at = lambda t: None            # offline / unauthorized / wedged adb
         self.tun_up_at = lambda t: False
+        self.adb.find_quest.return_value = {"status": "offline"}
+        self.manager.HEAL_FINAL_RESTARTS = 99
+
+        self.run_until(200)
+
+        self.assertEqual(self.heal_times()[:3], [15, 75, 195], "bound, then 60 s and 120 s backoff")
+        self.assertEqual(self.heals[0][1], Heal.RESTART_ADB_THEN_CLIENT,
+                         "the first step restarts the adb server")
+
+    def test_a_listed_headset_with_no_reading_ends_in_one_error_at_the_cap(self):
+        self.awake_at = lambda t: None
+        self.tun_up_at = lambda t: False
+        self.adb.find_quest.return_value = {"status": "unauthorized"}
+        self.manager.HEAL_FINAL_RESTARTS = 3
+
+        self.run_until(1000)
+
+        self.assertEqual(self.heal_times(), [15, 75, 195])
+        self.assertEqual(self.states.count(TetherState.ERROR), 1)
+        self.assertIn("Tether keeps dropping", self.manager.stats.last_error)
+        self.assertLess(self.clock.now, 1000, "the loop ended on its own at the cap")
+
+    def test_a_reading_after_the_no_reading_run_goes_back_to_the_awake_gate(self):
+        self.awake_at = lambda t: None if t < 8 else False   # unreadable, then asleep
+        self.tun_up_at = lambda t: False
+        self.adb.find_quest.return_value = {"status": "device"}
 
         self.run_until(300)
 
-        self.assertEqual(self.heals, [])
+        self.assertEqual(self.heals, [], "an asleep reading ends the no-reading run")
 
 
 class CapAndRelayDeath(LivenessHarness):
@@ -209,6 +238,47 @@ class CapAndRelayDeath(LivenessHarness):
         self.assertEqual(self.manager.stats.state, TetherState.ERROR)
         self.assertIn("Tether keeps dropping", self.manager.stats.last_error)
         self.assertFalse(self.manager._running)
+        self.assertLess(self.clock.now, 1000, "the loop ended on its own, not on the test's stop time")
+
+    def test_a_heal_that_raises_still_starts_the_backoff(self):
+        self.awake_at = lambda t: True
+        self.tun_up_at = lambda t: False
+        self.manager.HEAL_FINAL_RESTARTS = 99
+        attempts = []
+
+        def heal_that_raises_once(serial, action):
+            attempts.append(self.clock.now)
+            if len(attempts) == 1:
+                raise OSError("adb spawn failed")
+            return False
+        self.manager._heal = Mock(side_effect=heal_that_raises_once)
+        patcher = patch("tether_manager.logger.exception")   # the loop logs the error
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.run_until(200)
+
+        self.assertEqual(attempts[:3], [10, 70, 190], "60 s then 120 s, not every 5 s")
+        self.assertEqual(self.manager._liveness_now().restarts, len(attempts))
+
+    def test_a_reconnect_that_raises_after_a_relay_death_still_starts_the_backoff(self):
+        self.manager.is_relay_running = lambda: False
+        self.tun_up_at = lambda t: False
+        self.manager.HEAL_FINAL_RESTARTS = 99
+        calls = []
+
+        def reconnect_that_raises_once(serial):
+            calls.append(self.clock.now)
+            if len(calls) == 1:
+                raise OSError("spawn failed")
+        self.manager._attempt_reconnect = Mock(side_effect=reconnect_that_raises_once)
+        patcher = patch("tether_manager.logger.exception")   # the loop logs the error
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.run_until(200)
+
+        self.assertEqual(calls[:3], [0, 60, 180])
 
     def test_relay_death_waits_out_the_backoff_before_each_reconnect(self):
         self.manager.is_relay_running = lambda: False

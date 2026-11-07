@@ -765,15 +765,22 @@ class TetherManager:
         if live.probe_due(now):
             awake = self.adb.is_headset_awake(serial)
             if awake is None:
-                # No reading: not proof of awake. Drop the stale awake and silence
-                # clocks so no restart rests on them (unplugged, adb hung).
-                live = live.ineligible()
+                # No reading: not proof of awake. Drop the stale awake clock so no
+                # awake restart rests on it; a bounded run of these is handled below.
+                live = live.unreadable(now)
             else:
                 live = live.observed(awake, now)
         self._set_liveness(live)
 
+        unreadable = False
         if not live.restart_due(now):
-            return
+            if not live.unreadable_restart_due(now):
+                return
+            # Listed in adb but unreadable (offline, unauthorized, wedged adb): heal
+            # it. Gone from the device list (unplugged): keep waiting, #86 owns that.
+            if not self.adb.find_quest():
+                return
+            unreadable = True
         if self._restart_cap_reached():
             self._give_up_healing(self._keeps_dropping_text())
             return
@@ -781,8 +788,13 @@ class TetherManager:
         if action is Heal.GIVE_UP:
             self._give_up_healing("Max reconnect attempts reached")
             return
-        self._heal(serial, action)
-        self._note_restart(time.time())
+        if unreadable and action is Heal.RESTART_CLIENT:
+            action = Heal.RESTART_ADB_THEN_CLIENT   # a wedged adb needs its server restarted first
+        try:
+            self._heal(serial, action)
+        finally:
+            # Even when the heal raises: the backoff and the cap must still advance.
+            self._note_restart(time.time())
 
     def _relay_died(self, serial: str):
         """The relay process exited: reconnect, waiting out the restart backoff."""
@@ -797,8 +809,11 @@ class TetherManager:
         self._set_state(TetherState.RECONNECTING)
         self._wait_backoff()
         if self._running:
-            self._attempt_reconnect(serial)
-            self._note_restart(time.time())
+            try:
+                self._attempt_reconnect(serial)
+            finally:
+                # Even when the reconnect raises: the backoff and the cap must still advance.
+                self._note_restart(time.time())
 
     def _restart_cap_reached(self) -> bool:
         return self._liveness_now().restarts >= self.HEAL_FINAL_RESTARTS

@@ -93,6 +93,34 @@ class LivenessTest(unittest.TestCase):
         self.assertIsNone(l.awake_since)
         self.assertIsNone(l.next_probe_at)
 
+    def test_unreadable_drops_the_awake_clock_and_keeps_the_silence_clock(self):
+        l = Liveness().silent(0.0).observed(True, 0.0).unreadable(5.0)
+        self.assertEqual(l.silent_since, 0.0)
+        self.assertIsNone(l.awake_since)
+        self.assertIsNone(l.next_probe_at)
+        self.assertEqual(l.unreadable_since, 5.0)
+        self.assertEqual(l.unreadable(10.0).unreadable_since, 5.0, "the first no-reading time stays")
+
+    def test_a_reading_ineligible_and_restarted_end_the_no_reading_run(self):
+        l = Liveness().silent(0.0).unreadable(5.0)
+        self.assertIsNone(l.observed(False, 10.0).unreadable_since)
+        self.assertIsNone(l.ineligible().unreadable_since)
+        self.assertIsNone(l.restarted(20.0).unreadable_since)
+
+    def test_unreadable_restart_due_needs_silence_no_reading_and_the_backoff(self):
+        self.assertFalse(Liveness().unreadable_restart_due(100.0))
+        self.assertFalse(Liveness().silent(0.0).unreadable_restart_due(100.0), "needs a no-reading run")
+        l = Liveness().silent(0.0).unreadable(0.0)
+        self.assertFalse(l.unreadable_restart_due(14.0))
+        self.assertTrue(l.unreadable_restart_due(15.0))
+        self.assertFalse(l.restarted(15.0).silent(15.0).unreadable(15.0).unreadable_restart_due(40.0),
+                         "inside the backoff")
+        self.assertTrue(l.restarted(15.0).unreadable(16.0).unreadable_restart_due(75.0))
+
+    def test_unreadable_never_makes_the_awake_restart_due(self):
+        l = Liveness().silent(0.0).observed(True, 0.0).unreadable(5.0)
+        self.assertFalse(l.restart_due(100.0))
+
     def test_immutability(self):
         a = Liveness()
         b = a.silent(1.0)
