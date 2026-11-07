@@ -30,7 +30,7 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `packaging/linux/` | `install.sh` / `uninstall.sh` (one visible sudo prompt, only for the udev rule, #39; install links `~/.local/bin/quest-tether` to the packaged CLI and uninstall removes that link only when it points there, #74), `quest-tether.service` (systemd user unit running `qtetherd`, #37), `51-quest-tether.rules` (udev, vendor `2833`, #17). | scripts in; nothing builds the binaries or the tar.gz they install yet (#21) | M7, M9 |
 | `build.spec`, `build.bat` | PyInstaller one-file `QuestTether.exe` from `main.py` (Windows only); tools sit beside the EXE, not inside it. No CLI binary and no Linux target yet (#10, #21, #74). | Windows only | M9 |
 | `tools/` | Third-party binaries at run time (adb, relay, headset APK), supplied by the package, never committed (#11). Only `tools/README.md` is tracked. | done (#11) | M9 |
-| `tests/` | Unit tests that need no headset (42 `test_*.py` files plus 3 text fixtures in `tests/fixtures/`: platform, parsers, heal, connect flow, qtetherd, CLI, crash reporting, Decky backend, install scripts, temperature zones). CI runs `python -m unittest discover -s tests`. | present | all |
+| `tests/` | Unit tests that need no headset (43 `test_*.py` files plus 3 text fixtures in `tests/fixtures/`: platform, parsers, heal, connect flow, qtetherd, CLI, crash reporting, Decky backend, install scripts, temperature zones). CI runs `python -m unittest discover -s tests`. | present | all |
 | `docs/proposals/` | The 2026-11-01 session-manager and Rust/Tauri proposal, for discussion only; not part of the plan (#90 asks the owner when). | parked | - |
 
 ## The platform layer (`qt_platform/base.py`)
