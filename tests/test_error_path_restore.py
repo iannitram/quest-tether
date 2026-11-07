@@ -434,3 +434,83 @@ class RestoreHelper(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DisconnectDuringTheRestore(unittest.TestCase):
+    """A Disconnect (or a new Connect) that lands while the error-path restore runs.
+
+    The error exits clear _running themselves, so _stop_requested() cannot tell a later
+    disconnect() apart. The restore takes seconds, and disconnect() joins the health
+    thread for only 5 s, so the two overlap. disconnect() then owns the state and the
+    headset: the error exit must not set ERROR over IDLE or a new session, and must not
+    run a second Wi-Fi toggle against disconnect()'s (#116)."""
+
+    def _disconnect_in_restore(self, h, then=None):
+        """Run a real disconnect() the first time the restore sends the STOP intent."""
+        fired = []
+
+        def observer(name):
+            if name == "stop_gnirehtet_client" and not fired:
+                fired.append(True)
+                h.m.disconnect()
+                if then:
+                    then()
+
+        h.adb.observer = observer
+        return fired
+
+    def _assert_disconnect_owns_it(self, h, fired):
+        self.assertTrue(fired, "the restore never reached the STOP intent")
+        self.assertEqual(h.m.stats.state, TetherState.IDLE)
+        self.assertNotIn(TetherState.ERROR, [s for s, _ in h.states],
+                         "ERROR was set over a concurrent disconnect()")
+        self.assertEqual(h.adb.names().count("toggle_wifi"), 1,
+                         "the restore toggled Wi-Fi again after disconnect() did")
+
+    def test_relay_death_with_auto_reconnect_off(self):
+        h = Harness(self)
+        relay = h.live_session()
+        h.m._auto_reconnect = False
+        relay.returncode = 1
+        fired = self._disconnect_in_restore(h)
+
+        h.m._relay_died(SERIAL)
+
+        self._assert_disconnect_owns_it(h, fired)
+
+    def test_give_up_healing(self):
+        h = Harness(self)
+        h.live_session()
+        fired = self._disconnect_in_restore(h)
+
+        h.m._give_up_healing("Tether keeps dropping", SERIAL)
+
+        self._assert_disconnect_owns_it(h, fired)
+
+    def test_max_attempts_exit(self):
+        h = Harness(self)
+        h.live_session()
+        h.m._reconnect_attempts = h.m.MAX_RECONNECT_ATTEMPTS
+        fired = self._disconnect_in_restore(h)
+
+        h.m._attempt_reconnect(SERIAL)
+
+        self._assert_disconnect_owns_it(h, fired)
+
+    def test_a_new_connect_during_the_restore_is_not_overwritten_with_error(self):
+        h = Harness(self)
+        h.live_session()
+
+        def new_connect():
+            # What connect() leaves behind a moment later: a running session.
+            h.m._running = True
+            h.m._session_started = True
+            h.m._set_state(TetherState.STARTING)
+
+        fired = self._disconnect_in_restore(h, then=new_connect)
+
+        h.m._give_up_healing("Tether keeps dropping", SERIAL)
+
+        self.assertTrue(fired)
+        self.assertEqual(h.m.stats.state, TetherState.STARTING)
+        self.assertNotIn(TetherState.ERROR, [s for s, _ in h.states])
