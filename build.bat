@@ -37,7 +37,7 @@ if exist "dist\QuestTether.exe" (
     echo.
     echo Next steps:
     echo   1. Copy the tools\ folder into the same directory as QuestTether.exe
-    echo   2. Make sure tools\ contains: gnirehtet.exe, gnirehtet.apk, adb.exe
+    echo   2. Make sure tools\ contains: adb.exe, AdbWinApi.dll, AdbWinUsbApi.dll, gnirehtet.jar, gnirehtet.apk ^(see tools\README.md^); Java on PATH
     echo   3. Run QuestTether.exe
 ) else (
     echo BUILD FAILED. Check the output above for errors.
