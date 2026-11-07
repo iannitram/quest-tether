@@ -819,11 +819,17 @@ class TetherManager:
             self._liveness = live
 
     def _check_tunnel(self, serial: str, tun_ok: bool, now: float):
-        """Relay alive: update the state and run the tunnel-missing branch (#65)."""
+        """Relay alive: update the state, then run the liveness branch (#65, #102).
+
+        The branch follows the same gate as the state, so they cannot disagree. tun0
+        up with the relay's client count at 0 (the headset client went away this
+        spawn) is not a live tunnel: it takes the missing-tunnel branch, and the
+        awake-gated heal re-issues the client start instead of staying in Starting.
+        """
         tunnel_state = self._tunnel_state(tun_ok)
         if self.stats.state != tunnel_state:
             self._set_state(tunnel_state)
-        if tun_ok:
+        if tunnel_state is TetherState.CONNECTED:
             self._tunnel_seen(now)
         elif self._auto_reconnect:
             self._tunnel_missing(serial, now)
