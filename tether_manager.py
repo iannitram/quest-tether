@@ -100,6 +100,8 @@ class TetherManager:
     RECONNECT_DELAY = 3.0
     MAX_RECONNECT_ATTEMPTS = 10
     POST_CONNECT_COOLDOWN = 10.0
+    # How long a new session waits for the last session's health loop to exit (#108).
+    HEALTH_JOIN_TIMEOUT = 2.0
     BATTERY_POLL_INTERVAL = 120.0
     # Disconnect (#64): how long tun0 may take to go after the STOP intent, the
     # poll step, and the shorter wait after a force-stop. Defaults; device-tune later.
@@ -138,6 +140,8 @@ class TetherManager:
         # disconnect() both reach self._process, and a spawn must not land after a kill.
         self._proc_lock = threading.RLock()
         self._health_thread: Optional[threading.Thread] = None
+        # The serial the health loop polls; a kept loop follows it (#108).
+        self._health_serial: Optional[str] = None
         self._running = False
         # True once connect() has started a session. See _stop_requested (#103).
         self._session_started = False
@@ -744,7 +748,10 @@ class TetherManager:
         # Stop health monitor
         if self._health_thread:
             self._health_thread.join(timeout=5)
-            self._health_thread = None
+            # Still alive (stuck in an adb call): keep the handle, so the next
+            # Connect finds it and does not start a second loop (#108).
+            if not self._health_thread.is_alive():
+                self._health_thread = None
 
         serial = self.stats.device_serial
 
@@ -829,6 +836,21 @@ class TetherManager:
     # --- Health Monitoring ---
 
     def _start_health_monitor(self, serial: str):
+        """Start the health loop, but never a second live one (#108).
+
+        A loop left from the last session (disconnect's join timed out, or it is
+        still finishing a cycle) gets up to HEALTH_JOIN_TIMEOUT to exit. If it is
+        still alive after that, it is kept as this session's loop and follows the
+        new serial, so two loops never poll adb and heal at once.
+        """
+        self._health_serial = serial
+        old = self._health_thread
+        if old is not None and old.is_alive():
+            if old is not threading.current_thread():
+                old.join(timeout=self.HEALTH_JOIN_TIMEOUT)
+            if old.is_alive():
+                self._log("Health monitor still running — keeping it, not starting a second one")
+                return
         self._health_thread = threading.Thread(
             target=self._health_loop, args=(serial,), daemon=True
         )
@@ -853,6 +875,8 @@ class TetherManager:
         self._log("Health monitor active")
 
         while self._running:
+            # A loop kept by _start_health_monitor follows the new session's serial (#108).
+            serial = self._health_serial or serial
             try:
                 tun_ok = self._update_stats(serial)
 
@@ -961,6 +985,9 @@ class TetherManager:
         self._log("gnirehtet process died!")
         self._tun_up_since = None
         if not (self._auto_reconnect and self._running):
+            # No recovery will follow: stop the health loop too, so it does not log
+            # this death every cycle and a later Connect starts the only loop (#108).
+            self._running = False
             self._set_state(TetherState.ERROR, "Process died")
             return
         if self._restart_cap_reached():
