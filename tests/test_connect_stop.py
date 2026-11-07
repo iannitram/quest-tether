@@ -4,6 +4,7 @@ Fakes only: no headset, no relay process, no real sleeps in connect().
 """
 import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -205,6 +206,120 @@ class ConnectStopChecks(unittest.TestCase):
         self.assertTrue(self.connect())
 
         self.assertEqual(seen, [(1, 1), (2, 2)])
+
+    def test_real_disconnect_during_tunnel_wait_leaves_idle(self):
+        self.relay_starts()
+
+        def disconnect_now(_seconds):
+            # The real thing, as qtetherd does it: stop, clear the state, kill the relay.
+            self.manager.disconnect(headset_present=False)
+
+        self.assertFalse(self.connect(hook=disconnect_now))
+
+        self.assertEqual(self.manager.stats.state, TetherState.IDLE)
+        self.assertEqual(self.states[-1], TetherState.IDLE)
+        self.assertNotIn(TetherState.CONNECTED, self.states)
+        self.assertNotIn(TetherState.ERROR, self.states)
+        self.assertIsNone(self.manager._process)
+        self.manager._apply_wifi_policy.assert_not_called()
+        self.manager._start_health_monitor.assert_not_called()
+
+    def test_stop_during_the_connected_state_callback_skips_the_wifi_policy(self):
+        self.relay_starts()
+        self.manager.adb.is_vpn_up.return_value = True
+
+        def stop_when_connected(state, stats):
+            self.states.append(state)
+            if state is TetherState.CONNECTED:
+                self.stop()
+
+        self.manager.set_callbacks(on_state_change=stop_when_connected)
+
+        self.assertFalse(self.connect())
+
+        self.manager._apply_wifi_policy.assert_not_called()
+        self.manager._start_health_monitor.assert_not_called()
+
+    def test_stop_during_client_restart_does_not_wait_again(self):
+        self.relay_starts()
+        sleeps = []
+        self.manager.adb.start_gnirehtet_client.side_effect = (
+            lambda serial, port: self.stop() or True)
+
+        self.assertFalse(self.connect(hook=sleeps.append))
+
+        self.assertEqual(len(sleeps), 15)  # the 15 tun0 polls, none in the re-issue loop
+        self.manager.adb.get_device_details.assert_not_called()
+
+    def test_stop_during_wifi_policy_puts_wifi_back(self):
+        # The policy's adb calls can land after disconnect() restored Wi-Fi, so connect()
+        # puts Wi-Fi back itself when a stop came during the policy (#115).
+        self.relay_starts()
+        self.manager.adb.is_vpn_up.return_value = True
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        flag = os.path.join(tmp.name, "wifi-off.flag")
+        self.manager._data_dir = tmp.name
+        self.manager._wifi_flag = flag
+        self.manager.restore_wifi_if_flagged = (
+            TetherManager.restore_wifi_if_flagged.__get__(self.manager))
+
+        def policy_writes_flag_then_stop(serial):
+            with open(flag, "w") as f:
+                f.write("now")
+            self.stop()
+
+        self.manager._apply_wifi_policy = Mock(side_effect=policy_writes_flag_then_stop)
+
+        self.assertFalse(self.connect())
+
+        self.manager.adb.run_adb.assert_any_call(
+            "-s", "quest-serial", "shell", "svc", "wifi", "enable")
+        self.assertFalse(os.path.exists(flag))
+        self.manager._start_health_monitor.assert_not_called()
+
+
+class GenerationBeforeRunning(unittest.TestCase):
+    def test_session_generation_is_bumped_before_running_turns_true(self):
+        # A loop kept from the last session wakes as soon as _running is True. If the
+        # generation still has the old value then, it counts as current and can heal
+        # beside the new connect (#115).
+        seen = []
+
+        class Recording(TetherManager):
+            @property
+            def _running(self):
+                return self.__dict__.get("_running_value", False)
+
+            @_running.setter
+            def _running(self, value):
+                self.__dict__["_running_value"] = value
+                if value:
+                    seen.append((self._session_gen, self._health_active_gen))
+
+        adb = Mock()
+        adb.adb_path = "adb"
+        adb.is_vpn_up.return_value = True
+        adb.get_device_details.return_value = {}
+        manager = Recording(adb, gnirehtet_path="fake.jar")
+        manager.relay_mode = "run"
+        manager._wifi_mode = "off"
+        manager._kill_stale_process = Mock()
+        manager.restore_wifi_if_flagged = Mock()
+        manager._apply_wifi_policy = Mock()
+        manager._start_health_monitor = Mock()
+        process = fake_process()
+
+        def start(serial):
+            manager._process = process
+            return True
+
+        manager._start_run_relay = Mock(side_effect=start)
+        with patch("tether_manager.time.sleep"):
+            self.assertTrue(manager.connect("quest-serial"))
+
+        # (new generation, loop not yet handed over)
+        self.assertEqual(seen, [(1, 0)])
 
 
 class KeptHealthLoop(unittest.TestCase):
