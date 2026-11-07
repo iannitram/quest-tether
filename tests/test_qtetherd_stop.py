@@ -2,13 +2,16 @@
 
 import os
 import signal
+import subprocess
 import sys
 import threading
 import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import qtetherd  # noqa: E402
+from test_systemd_unit import unit  # noqa: E402
 
 
 class FakeTether:
@@ -73,6 +76,81 @@ class StopTether(unittest.TestCase):
 
     def test_the_default_cap_is_short_and_inside_the_unit_timeout(self):
         self.assertEqual(qtetherd.STOP_CAP_SECONDS, 20.0)
+
+
+class StopWhileAnotherRequestHoldsTheLock(unittest.TestCase):
+    """A connect holds the shared lock for tens of seconds; SIGTERM must still disconnect (#110)."""
+
+    def _hold_lock(self):
+        lock = threading.Lock()
+        held = threading.Event()
+        release = threading.Event()
+
+        def hold():
+            with lock:
+                held.set()
+                release.wait(10)
+
+        thread = threading.Thread(target=hold, daemon=True)
+        thread.start()
+        self.assertTrue(held.wait(5))
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(release.set)
+        return lock, release
+
+    def test_a_held_lock_does_not_stop_the_disconnect_from_running(self):
+        lock, _release = self._hold_lock()
+        tether = FakeTether()
+        with patch.object(qtetherd, "STOP_LOCK_WAIT_SECONDS", 0.1):
+            result = qtetherd.stop_tether(tether, lambda: "SERIAL", lock=lock, cap=5.0)
+        self.assertTrue(result)
+        self.assertEqual(tether.calls, [True])
+
+    def test_a_held_lock_is_left_to_its_owner(self):
+        lock, _release = self._hold_lock()
+        tether = FakeTether()
+        with patch.object(qtetherd, "STOP_LOCK_WAIT_SECONDS", 0.1):
+            qtetherd.stop_tether(tether, lambda: "SERIAL", lock=lock, cap=5.0)
+        self.assertTrue(lock.locked(), "stop released a lock it did not hold")
+
+    def test_a_lock_released_within_the_wait_is_taken_before_disconnecting(self):
+        lock, release = self._hold_lock()
+        seen = []
+        tether = FakeTether()
+        original = tether.disconnect
+
+        def disconnect(headset_present=True):
+            seen.append(lock.locked())
+            original(headset_present=headset_present)
+
+        tether.disconnect = disconnect
+        threading.Timer(0.1, release.set).start()
+        with patch.object(qtetherd, "STOP_LOCK_WAIT_SECONDS", 3.0):
+            self.assertTrue(qtetherd.stop_tether(tether, lambda: "SERIAL", lock=lock, cap=5.0))
+        self.assertEqual(tether.calls, [True])
+        self.assertEqual(seen, [True])
+
+    def test_the_lock_wait_is_shorter_than_the_stop_cap(self):
+        self.assertLess(qtetherd.STOP_LOCK_WAIT_SECONDS, qtetherd.STOP_CAP_SECONDS)
+
+
+class StopTimeoutsAgree(unittest.TestCase):
+    """The caps nest: disconnect cap < unit TimeoutStopSec < the `service stop` client wait (#110)."""
+
+    def test_the_stop_cap_is_below_the_unit_timeout(self):
+        self.assertLess(qtetherd.STOP_CAP_SECONDS, float(unit()["Service"]["TimeoutStopSec"]))
+
+    def test_service_stop_waits_longer_than_the_unit_stop_timeout(self):
+        from qt_platform import linux
+
+        done = subprocess.CompletedProcess([], 0, "inactive\n", "")
+        with patch.object(linux.subprocess, "run", return_value=done) as run:
+            linux.LinuxPlatform().service("stop")
+        stop_call = run.call_args_list[0]
+        self.assertEqual(stop_call.args[0][-2:], ["stop", linux.SERVICE_UNIT])
+        self.assertGreater(
+            stop_call.kwargs["timeout"], float(unit()["Service"]["TimeoutStopSec"])
+        )
 
 
 class SigtermHandler(unittest.TestCase):
