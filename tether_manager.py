@@ -658,10 +658,10 @@ class TetherManager:
             self._log(f"Already {self.stats.state.value} — not starting another relay")
             return True
 
-        self._running = True
-        self._session_started = True
         self._session_gen += 1
         gen = self._session_gen
+        self._running = True
+        self._session_started = True
         self._reconnect_attempts = 0
         self.stats.device_serial = serial
 
@@ -771,6 +771,9 @@ class TetherManager:
             return False
         self._apply_wifi_policy(serial)
         if self._connect_stopped(gen):
+            # disconnect() may have restored Wi-Fi before the policy's adb calls ran
+            if gen == self._session_gen:
+                self.restore_wifi_if_flagged(serial)
             return False
 
         # The hand-over (#115): from here this session's loop may act, and a loop kept
