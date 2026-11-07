@@ -187,6 +187,22 @@ class ADBManager:
             return None
         return quest.get("serial") or None
 
+    def device_listed(self, serial: str) -> Optional[bool]:
+        """Is `serial` in `adb devices -l` in any state (#65)?
+
+        True: listed, even as offline or unauthorized (those lines carry no model,
+        so find_quest() cannot see them). False: the list was read and the serial
+        is not in it (unplugged). None: the `adb devices` call failed or timed out,
+        which is a wedged adb server, not an unplugged headset. Never raises.
+        """
+        try:
+            result = self.run_adb("devices", "-l")
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        return any(d.get("serial") == serial for d in parse_devices(result.stdout))
+
     def get_device_details(self, serial: str) -> Dict[str, str]:
         """Get device model, battery, and VPN IP. Minimal ADB calls."""
         info = {}

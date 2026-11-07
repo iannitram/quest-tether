@@ -709,8 +709,8 @@ class TetherManager:
                 else:
                     # Relay alive: is the tunnel actually there?
                     self._check_tunnel(serial, tun_ok, time.time())
-                    if not self._running:
-                        return
+                if not self._running:
+                    return   # auto-recovery gave up: no Wi-Fi sync after the stop
 
                 # Keep the headset Wi-Fi policy applied (headset may re-enable Wi-Fi itself)
                 if (
@@ -776,9 +776,10 @@ class TetherManager:
         if not live.restart_due(now):
             if not live.unreadable_restart_due(now):
                 return
-            # Listed in adb but unreadable (offline, unauthorized, wedged adb): heal
-            # it. Gone from the device list (unplugged): keep waiting, #86 owns that.
-            if not self.adb.find_quest():
+            # Listed in adb in any state (offline, unauthorized) or `adb devices`
+            # itself failing (wedged adb server): heal it. Read and not in the list
+            # (unplugged): keep waiting, #86 owns that.
+            if self.adb.device_listed(serial) is False:
                 return
             unreadable = True
         if self._restart_cap_reached():

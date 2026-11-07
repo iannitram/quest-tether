@@ -200,6 +200,54 @@ class HeadsetAwake(unittest.TestCase):
         self.assertEqual(kwargs, {"timeout": 3.0})
 
 
+class DeviceListed(unittest.TestCase):
+    """device_listed (#65): the serial in `adb devices -l` in any state; None when the call fails."""
+
+    OFFLINE = "1WMHH111111111\toffline usb:1-1 transport_id:3"
+    UNAUTH = "1WMHH111111111\tunauthorized usb:1-1 transport_id:3"
+
+    def listed(self, reply, serial="1WMHH111111111"):
+        manager = HeadsetAwake.make_manager(None)
+        with patch.object(manager, "run_adb", return_value=reply) as run:
+            value = manager.device_listed(serial)
+        run.assert_called_once_with("devices", "-l")
+        return value
+
+    @staticmethod
+    def reply(*lines, returncode=0):
+        text = "List of devices attached\n" + "".join(line + "\n" for line in lines)
+        return subprocess.CompletedProcess([], returncode, text, "")
+
+    def test_a_ready_headset_is_listed(self):
+        self.assertIs(self.listed(self.reply(DEVICE_LINE)), True)
+
+    def test_an_offline_line_is_listed_though_find_quest_cannot_see_it(self):
+        reply = self.reply(self.OFFLINE)
+        self.assertIs(self.listed(reply), True)
+        manager = HeadsetAwake.make_manager(None)
+        with patch.object(manager, "run_adb", return_value=reply):
+            self.assertIsNone(manager.find_quest(), "the line has no model or product")
+
+    def test_an_unauthorized_line_is_listed(self):
+        self.assertIs(self.listed(self.reply(self.UNAUTH)), True)
+
+    def test_a_no_permission_line_is_listed(self):
+        self.assertIs(self.listed(self.reply(NO_PERM_LINE), serial="1WMHH000000000"), True)
+
+    def test_a_list_without_the_serial_is_not_listed(self):
+        self.assertIs(self.listed(self.reply(DEVICE_LINE), serial="OTHER"), False)
+        self.assertIs(self.listed(self.reply()), False)
+
+    def test_a_failed_or_timed_out_devices_call_is_unknown(self):
+        failed = subprocess.CompletedProcess([], 1, "", "Timeout")
+        self.assertIsNone(self.listed(failed))
+
+    def test_an_exception_from_run_adb_is_unknown(self):
+        manager = HeadsetAwake.make_manager(None)
+        with patch.object(manager, "run_adb", side_effect=OSError("boom")):
+            self.assertIsNone(manager.device_listed("1WMHH111111111"))
+
+
 class UdevFiles(unittest.TestCase):
     def test_rule_file_is_exactly_one_line(self):
         with open(os.path.join(ROOT, "packaging", "linux", "51-quest-tether.rules")) as f:
