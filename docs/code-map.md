@@ -91,11 +91,11 @@ flowchart LR
 ## Open-source pieces
 
 - gnirehtet (Genymobile, Apache-2.0): the relay and headset APK; Java relay on Windows, native relay on Linux.
-- gnirehtet-gui (Apache-2.0): the `am start` `Error:` detection pattern in `am_result.py` and `adb_manager.py` (#63, credited in `NOTICE`), and the relay "Client #N connected/disconnected" parser in `relay_log.py` (#62, credited in a source comment; its `NOTICE` line is still missing).
+- gnirehtet-gui (Apache-2.0): the `am start` `Error:` detection pattern in `am_result.py` and `adb_manager.py` (#63, credited in `NOTICE`), and the relay "Client #N connected/disconnected" parser in `relay_log.py` (#62, credited in a source comment and in `NOTICE` by #92).
 - Android platform-tools (`adb`): per-OS binary from Google's download, in the package.
 - CustomTkinter, pystray, Pillow (already used).
 - flat-to-3d (the owner's repo): the heal ladder and flap breaker in `heal.py` (#46, ported from flat-to-3d#164).
-- quest-vd-wired (Apache-2.0): the awake-gated liveness policy in `heal_policy.py` (#65, credited in a source comment) and the stop-VPN-first Disconnect order (#64). Its `NOTICE` line is still missing.
+- quest-vd-wired (Apache-2.0): the awake-gated liveness policy in `heal_policy.py` (#65, credited in a source comment) and the stop-VPN-first Disconnect order (#64). `NOTICE` credits #65 by #92; #64's line comes with its handshake code.
 - `soak_report.py` (#3) is our own log counter; flat-to-3d's soak summary (throughput, memory) was suggested on #3 but is not ported.
 - Decky Loader's plugin template (`decky-plugin-template`, `@decky/ui`, `@decky/api`) for the plugin's frontend build.
 
@@ -110,7 +110,5 @@ Where it stands (2026-11-07): Dev Loop. The Linux platform, the service, the Dec
 5. Reconnect and liveness. Done: heal ladder (#46), refused client starts (#63), fail-closed stale-relay check (#67), one reconnect per outage (#79). Open: through the service, an unplug runs the headset-side disconnect against a missing headset, and the replug is a fresh connect not counted as a reconnect (#86); wire in the merged helpers: relay-log client signal (#62), stop the VPN first and verify it closed (#64), awake-gated liveness (#65); separate relay with a port probe (#66).
 6. Command line and agents (scope added by the owner, 2026-11-04). Done: CLI merged (#88). Open: try it on the headset and package it (#74), the MCP server on the same command layer (#75).
 7. Device checks before 1.0. Open: the multi-hour soak on both OSes (#3; summary tool merged in #89), the Windows questions (needs a Windows PC with the headset): USB audio chain (#7), audio output and display layout revert (#8), Rust relay on Windows (#9).
-
-Also open: `NOTICE` lines for the gnirehtet-gui relay-log parser (#62) and quest-vd-wired (#64, #65).
 
 After 1.0: charge control (#5), peer-survey ideas (#68). Trackers: #12 (goals and rules), #90 (status and next steps).
