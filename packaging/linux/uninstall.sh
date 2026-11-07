@@ -11,6 +11,10 @@ systemctl --user daemon-reload || true
 if [ -L "$BIN/quest-tether" ] && [ "$(readlink "$BIN/quest-tether")" = "$PREFIX/quest-tether" ]; then
   rm -f "$BIN/quest-tether"
 fi
+# Unregister the MCP server from Claude Code when `claude` is on PATH (#75).
+if command -v claude >/dev/null 2>&1; then
+  claude mcp remove quest-tether --scope user >/dev/null 2>&1 || true
+fi
 rm -rf "$PREFIX"
 
 echo "Removing the USB rule needs one administrator step."

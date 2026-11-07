@@ -126,6 +126,62 @@ class Scripts(unittest.TestCase):
         self.run_script("uninstall.sh")
         self.assertEqual(os.readlink(self.link), other)
 
+    # claude mcp add/remove (#75): a fake `claude` on PATH logs its arguments.
+
+    def add_fake_claude(self, fail=False):
+        body = FAKE + ("exit 1\n" if fail else "")
+        p = os.path.join(self.fakebin, "claude")
+        with open(p, "w") as f:
+            f.write(body)
+        os.chmod(p, 0o755)
+
+    def server_path(self):
+        return os.path.join(self.prefix, "quest-tether")
+
+    def test_install_registers_the_mcp_server_with_claude(self):
+        self.add_fake_claude()
+        out = self.run_script("install.sh")
+        calls = self.calls()
+        self.assertIn("claude mcp remove quest-tether --scope user", calls)
+        self.assertIn(
+            "claude mcp add --scope user quest-tether -- %s mcp" % self.server_path(), calls)
+        self.assertIn("Registered the quest-tether MCP server", out)
+
+    def test_install_registers_the_mcp_server_by_absolute_path_not_by_name(self):
+        self.add_fake_claude()
+        self.run_script("install.sh")
+        add = [c for c in self.calls() if c.startswith("claude mcp add")]
+        self.assertEqual(len(add), 1)
+        self.assertTrue(os.path.isabs(add[0].split(" -- ")[1].split()[0]))
+
+    def test_install_skips_the_registration_quietly_without_claude(self):
+        out = self.run_script("install.sh")
+        self.assertFalse([c for c in self.calls() if c.startswith("claude")])
+        self.assertNotIn("MCP", out)
+        self.assertTrue(os.path.islink(self.link))
+
+    def test_install_still_succeeds_when_claude_refuses_the_registration(self):
+        self.add_fake_claude(fail=True)
+        out = self.run_script("install.sh")
+        self.assertIn("Could not register the MCP server", out)
+        self.assertIn("claude mcp add --scope user quest-tether -- %s mcp" % self.server_path(), out)
+        self.assertEqual(len([c for c in self.calls() if c.startswith("sudo")]), 1)
+        self.assertTrue(os.path.islink(self.link))
+
+    def test_uninstall_removes_the_mcp_registration(self):
+        self.add_fake_claude()
+        self.run_script("install.sh")
+        os.remove(self.log)
+        self.run_script("uninstall.sh")
+        self.assertIn("claude mcp remove quest-tether --scope user", self.calls())
+
+    def test_uninstall_without_claude_is_quiet_and_still_removes_the_files(self):
+        self.run_script("install.sh")
+        out = self.run_script("uninstall.sh")
+        self.assertFalse([c for c in self.calls() if c.startswith("claude")])
+        self.assertFalse(os.path.exists(self.prefix))
+        self.assertNotIn("MCP", out)
+
 
 if __name__ == "__main__":
     unittest.main()

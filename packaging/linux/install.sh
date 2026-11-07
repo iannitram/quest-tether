@@ -22,6 +22,17 @@ else
   esac
 fi
 
+# Register the MCP server with Claude Code for this user, when `claude` is on PATH (#75).
+# A failure here does not stop the install; the hint says what to run by hand.
+if command -v claude >/dev/null 2>&1; then
+  claude mcp remove quest-tether --scope user >/dev/null 2>&1 || true
+  if claude mcp add --scope user quest-tether -- "$PREFIX/quest-tether" mcp >/dev/null 2>&1; then
+    echo "Registered the quest-tether MCP server with Claude Code (check with: claude mcp list)."
+  else
+    echo "Could not register the MCP server. To do it by hand: claude mcp add --scope user quest-tether -- $PREFIX/quest-tether mcp"
+  fi
+fi
+
 cp "$PKG/quest-tether.service" "$UNIT"
 systemctl --user daemon-reload
 systemctl --user enable --now quest-tether.service

@@ -30,3 +30,20 @@ tether in-process.
 | `crash-queue [--flush]` | Show queued crash reports, or retry them with `--flush`. |
 | `service status\|start\|stop` | Manage the Linux systemd user service. |
 | `gui` | Start the desktop window. |
+| `mcp` | Run the MCP server over stdio for Claude Code (see below). Takes no `--json`. |
+
+## Claude Code (MCP server)
+
+`quest-tether mcp` starts a Model Context Protocol server on stdin and stdout. It opens no network port. It drives the same commands as the CLI, through the same service or in-process path.
+
+- Read tools run at once: `status`, `doctor`, `logs`, `crash_queue`, `settings_get`, `service_status`.
+- Write tools change the tether or the headset: `connect`, `disconnect`, `wifi_sync`, `install_apk`, `crash_queue_flush`, `settings_set`, `service`. Each one refuses unless the call passes `confirm: true`.
+- Without the service, a `connect` lasts only as long as the MCP server runs, because the tether lives in that process. The server brings it down when it exits (stdin closed or a stop signal).
+
+On Linux, `packaging/linux/install.sh` registers the server with Claude Code for your user when `claude` is on PATH, using the full path to the installed `quest-tether`. Check it with `claude mcp list`. `uninstall.sh` removes the registration. Without `claude`, install skips this step quietly.
+
+On Windows, once the console `quest-tether.exe` is packaged (#74), register it by hand, using the folder where it sits:
+
+    claude mcp add --scope user quest-tether -- "<folder>\quest-tether.exe" mcp
+
+The server is a small stdlib loop, not the `mcp` Python package. It needs only four protocol methods, and the package would add pydantic and anyio, which makes the PyInstaller build harder.
