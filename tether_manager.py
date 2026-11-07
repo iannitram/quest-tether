@@ -659,6 +659,12 @@ class TetherManager:
         # A previous session/crash may have left the headset's Wi-Fi off
         self.restore_wifi_if_flagged(serial)
 
+        # A session that ended in ERROR may have left its relay running. It holds
+        # the port, and the spawn below would drop the handle to it (#107).
+        if self.is_relay_running():
+            self._log("The last session's relay is still running — stopping it first")
+            self._kill_process()
+
         # Kill any orphaned process from a previous crash
         self._kill_stale_process()
 
@@ -1007,8 +1013,11 @@ class TetherManager:
             f"Auto-recovery stopped after {restarts} restarts with no tunnel — "
             "not retrying"
         )
-        self._set_state(TetherState.ERROR, error)
         self._running = False
+        # The relay may still be alive: kill it, or the next connect() finds the
+        # port taken and fails (#107). ERROR then means no relay is running.
+        self._kill_process()
+        self._set_state(TetherState.ERROR, error)
 
     def _heal(self, serial: str, action: Heal) -> bool:
         """Relay is alive but tun0 keeps vanishing. Escalate gently:
@@ -1240,8 +1249,9 @@ class TetherManager:
             return
         if self._reconnect_attempts >= self.MAX_RECONNECT_ATTEMPTS:
             self._log(f"Max reconnect attempts ({self.MAX_RECONNECT_ATTEMPTS}) reached")
-            self._set_state(TetherState.ERROR, "Max reconnect attempts reached")
             self._running = False
+            self._kill_process()  # no relay is left behind in ERROR (#107)
+            self._set_state(TetherState.ERROR, "Max reconnect attempts reached")
             return
 
         if self._reconnect_attempts == 0:
