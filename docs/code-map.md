@@ -51,7 +51,7 @@ What each part owns, who calls whom, and how a Windows-only app becomes Windows 
 | `pc_wifi()` -> `(ssid, key, security)` | `netsh wlan show interfaces` / `show profile key=clear`; `security` is `wpa2` or `wpa3` | `nmcli` on the active Wi-Fi connection: `802-11-wireless.ssid`, `802-11-wireless-security.psk`, `802-11-wireless-security.key-mgmt` (`wpa-psk` -> `wpa2`, `sae` -> `wpa3`) |
 | `single_instance(name)` | named mutex `Local\QuestTetherSingleInstance` (today's code) | a lock file in `data_dir()` (`fcntl.flock`) |
 | `uses_tether_service()` | `False` (the window runs the core) | `True` (the window is a `qtetherd` client) |
-| `autostart()` / `set_autostart(on)` | `HKCU\...\Run` value with `--minimized` | `~/.config/autostart/quest-tether.desktop` with `--minimized` |
+| `autostart()` / `set_autostart(on)` | `HKCU\...\Run` value with `--minimized` | `~/.config/autostart/quest-tether.desktop`; packaged binary runs `quest-tether gui --minimized`, source run adds `--minimized` to `main.py` |
 | `service(action)` | `{"ok": False, "error": "no service on Windows"}` | `status`, `start`, `stop` only: `systemctl --user start|stop quest-tether.service`, then `is-active` to set `running` (the unit that runs `qtetherd`); any other action returns an error |
 
 Every caller uses `qt_platform.current()` for OS behaviour; the one exception is `crash_report.platform_name()`, which reads `sys.platform` itself to name the report file. Each platform also has a `name` (`windows`, `linux`), which `doctor` uses.
