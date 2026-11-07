@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import qtetherd  # noqa: E402
+from tether_manager import TetherState  # noqa: E402
 from test_qtetherd_requests import FakeTether, SERIAL, stats  # noqa: E402
 
 
@@ -68,6 +69,27 @@ class LoadAtStart(Base):
         qtetherd.apply_saved_settings(t, env={"QT_WIFI_MODE": "sideways"})
         self.assertEqual(t.wifi_mode, "leave")
 
+    def test_invalid_env_and_no_file_falls_back_to_off(self):
+        # TetherManager takes QT_WIFI_MODE unchecked, so a bad value sits in wifi_mode.
+        t = FakeTether(stats())
+        t.wifi_mode = "bogus"
+        qtetherd.apply_saved_settings(t, env={"QT_WIFI_MODE": "bogus"})
+        self.assertEqual(t.wifi_mode, "off")
+        self.assertEqual(qtetherd._settings(t)["wifi_mode"], "off")
+
+    def test_invalid_env_with_a_bad_file_value_falls_back_to_off(self):
+        self.write({"wifi_mode": "nope"})
+        t = FakeTether(stats())
+        t.wifi_mode = "bogus"
+        qtetherd.apply_saved_settings(t, env={"QT_WIFI_MODE": "bogus"})
+        self.assertEqual(t.wifi_mode, "off")
+
+    def test_valid_env_wifi_mode_is_left_alone_with_no_file(self):
+        t = FakeTether(stats())
+        t.wifi_mode = "sync"
+        qtetherd.apply_saved_settings(t, env={"QT_WIFI_MODE": "sync"})
+        self.assertEqual(t.wifi_mode, "sync")
+
     def test_no_file_leaves_the_defaults(self):
         t = FakeTether(stats())
         applied = qtetherd.apply_saved_settings(t, env={})
@@ -90,12 +112,48 @@ class LoadAtStart(Base):
 
 
 class SetPersists(Base):
-    def test_set_writes_the_effective_values_and_reports_persisted(self):
+    def test_set_writes_only_the_changed_key_and_reports_persisted(self):
         t = FakeTether(stats())
         answer = self.set(t, {"wifi-mode": "leave"})
         self.assertEqual(answer["persisted"], True)
         self.assertTrue(answer["ok"])
-        self.assertEqual(self.read(), {"version": 1, "auto_reconnect": True, "wifi_mode": "leave"})
+        self.assertEqual(self.read(), {"version": 1, "wifi_mode": "leave"})
+
+    def test_env_forced_wifi_mode_is_not_saved_when_another_key_changes(self):
+        # QT_WIFI_MODE=sync is in force, so the tether shows sync; the user only toggled auto-reconnect.
+        t = FakeTether(stats())
+        t.wifi_mode = "sync"
+        self.set(t, {"auto_reconnect": False})
+        self.assertEqual(self.read(), {"version": 1, "auto_reconnect": False})
+
+    def test_env_forced_wifi_mode_does_not_replace_the_saved_one(self):
+        self.write({"version": 1, "wifi_mode": "leave"})
+        t = FakeTether(stats())
+        t.wifi_mode = "sync"
+        self.set(t, {"auto_reconnect": False})
+        self.assertEqual(self.read(),
+                         {"version": 1, "auto_reconnect": False, "wifi_mode": "leave"})
+
+    def test_a_changed_key_is_merged_over_the_file(self):
+        self.write({"version": 1, "auto_reconnect": False})
+        t = FakeTether(stats())
+        self.set(t, {"wifi_mode": "sync"})
+        self.assertEqual(self.read(),
+                         {"version": 1, "auto_reconnect": False, "wifi_mode": "sync"})
+
+    def test_an_explicit_wifi_mode_is_saved_even_when_env_forces_another(self):
+        t = FakeTether(stats())
+        t.wifi_mode = "sync"
+        self.set(t, {"wifi_mode": "leave"})
+        self.assertEqual(self.read(), {"version": 1, "wifi_mode": "leave"})
+
+    def test_an_unreadable_file_is_replaced_by_the_changed_key(self):
+        with open(self.path, "w", encoding="utf-8") as stream:
+            stream.write("{not json")
+        t = FakeTether(stats())
+        answer = self.set(t, {"auto_reconnect": False})
+        self.assertTrue(answer["persisted"])
+        self.assertEqual(self.read(), {"version": 1, "auto_reconnect": False})
 
     def test_a_later_set_keeps_the_other_settings_in_the_file(self):
         t = FakeTether(stats())
@@ -163,6 +221,33 @@ class SetPersists(Base):
         self.assertEqual(os.listdir(self.dir), ["settings.json"])
 
 
+class SharedTetherSets(Base):
+    def test_concurrent_sets_on_one_tether_leave_the_file_equal_to_its_state(self):
+        t = FakeTether(stats())
+        modes = ["off", "sync", "leave"]
+        barrier = threading.Barrier(8)
+        errors = []
+
+        def worker(i):
+            try:
+                barrier.wait()
+                for n in range(25):
+                    self.set(t, {"wifi_mode": modes[(i + n) % 3],
+                                 "auto_reconnect": bool((i + n) % 2)})
+            except Exception as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(20)
+        self.assertEqual(errors, [])
+        self.assertEqual(self.read(), {"version": 1,
+                                       "auto_reconnect": t.auto_reconnect,
+                                       "wifi_mode": t.wifi_mode})
+
+
 class ServeOrder(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.mkdtemp()
@@ -190,12 +275,30 @@ class ServeOrder(unittest.TestCase):
             qtetherd.serve()
         return adb, tether
 
-    def test_saved_auto_reconnect_off_stops_the_monitor_from_starting(self):
+    def test_saved_auto_reconnect_off_still_starts_the_monitor(self):
+        # The callbacks check the flag, so a later "on" in the window works without a restart.
         with open(self.path, "w", encoding="utf-8") as stream:
             json.dump({"auto_reconnect": False}, stream)
         adb, tether = self.run_serve()
         self.assertFalse(tether.auto_reconnect)
-        adb.start_monitoring.assert_not_called()
+        adb.start_monitoring.assert_called_once()
+
+    def test_turning_auto_reconnect_on_later_makes_the_monitor_connect(self):
+        with open(self.path, "w", encoding="utf-8") as stream:
+            json.dump({"auto_reconnect": False}, stream)
+        fake = FakeTether(stats(state=TetherState.IDLE))
+        adb, tether = self.run_serve(tether=fake)
+        adb.start_monitoring.assert_called_once()
+        on_connected = adb.start_monitoring.call_args.kwargs["on_connected"]
+
+        on_connected({"serial": "QUEST1", "status": "device"})
+        self.assertEqual(fake.calls, [])  # off: the plug-in is ignored
+
+        qtetherd.handle_request(
+            fake, SERIAL, {"cmd": "settings-set", "settings": {"auto_reconnect": True}}
+        )
+        on_connected({"serial": "QUEST1", "status": "device"})
+        self.assertEqual(fake.calls, [("connect", "QUEST1")])
 
     def test_default_auto_reconnect_starts_the_monitor(self):
         adb, tether = self.run_serve()
