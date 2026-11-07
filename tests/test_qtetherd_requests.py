@@ -27,8 +27,8 @@ class FakeTether:
         self.calls.append(("connect", serial))
         return self.connect_ok
 
-    def disconnect(self):
-        self.calls.append(("disconnect",))
+    def disconnect(self, headset_present=True):
+        self.calls.append(("disconnect", headset_present))
 
 
 class LockProbeTether:
@@ -50,7 +50,7 @@ class LockProbeTether:
         self.lock_checks.append(qtetherd._TETHER_LOCK.locked())
         return True
 
-    def disconnect(self):
+    def disconnect(self, headset_present=True):
         self.lock_checks.append(qtetherd._TETHER_LOCK.locked())
 
 
@@ -153,7 +153,15 @@ class Commands(unittest.TestCase):
         self.assertEqual(
             qtetherd.handle_request(t, SERIAL, {"cmd": "disconnect"}), {"ok": True}
         )
-        self.assertEqual(t.calls, [("disconnect",)])
+        self.assertEqual(t.calls, [("disconnect", True)])
+
+    def test_disconnect_with_no_headset_on_usb_skips_headset_steps(self):
+        t = FakeTether(stats())
+        self.assertEqual(
+            qtetherd.handle_request(t, lambda: None, {"cmd": "disconnect"}),
+            {"ok": True},
+        )
+        self.assertEqual(t.calls, [("disconnect", False)])
 
     def test_connect_while_connected_returns_already_and_starts_nothing(self):
         t = FakeTether(stats(state=TetherState.CONNECTED))
