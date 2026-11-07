@@ -51,6 +51,7 @@ One app that brings the tether up by itself, heals it after unplugs and sleeps, 
 - Windows keeps the Java relay (#9's measured result). Linux uses the native `gnirehtet` relay binary, the upstream's home platform, so SteamOS needs no Java runtime; if it fails there too, Linux falls back to the Java relay (#9 records which).
 - On Linux one small user service owns the tether, and both the desktop window and the Decky plugin are clients of it, so the two can never start two relays. On Windows the window runs the core in-process, as today.
 - Tool binaries come with the per-OS package from the launcher.
+- A `quest-tether` command line drives every feature (`--json` on each command), going through `qtetherd` when it answers and in-process otherwise; an MCP server (`quest-tether mcp`, local stdio) mirrors it on the same command layer (owner request and ruling, 2026-11-04; #74, #75). This adds tooling, not a Must.
 
 ## Testing decisions
 
