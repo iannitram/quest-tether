@@ -169,6 +169,15 @@ class Flags(unittest.TestCase):
             self.assertEqual(got, os.path.join(d, "QuestTether"))
             self.assertTrue(os.path.isdir(got))
 
+    def test_config_dir_is_appdata_quest_tether(self):
+        with (
+            tempfile.TemporaryDirectory() as d,
+            mock.patch.dict(os.environ, {"APPDATA": d}),
+        ):
+            got = WindowsPlatform().config_dir()
+            self.assertEqual(got, os.path.join(d, "QuestTether"))
+            self.assertTrue(os.path.isdir(got))
+
 
 class PcWifi(unittest.TestCase):
     def test_disconnected_fixture_gives_none(self):

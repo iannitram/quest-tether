@@ -9,7 +9,10 @@ It owns the one TetherManager on Linux and answers one JSON object per line on
   {"cmd": "logs", "source": "app"|"relay", "n": 50}
                         -> {"ok": true, "source": "app", "lines": ["...", ...]}
   {"cmd": "settings-get"} -> {"ok": true, "settings": {...}}
-  {"cmd": "settings-set", "settings": {...}} -> {"ok": true, "settings": {...}}
+  {"cmd": "settings-set", "settings": {...}} -> {"ok": true, "settings": {...}, "persisted": bool}
+                        (plus "warning" when the change applied but could not be saved)
+Settings persist in settings.json in the config folder (#117). serve() loads it
+at start; QT_WIFI_MODE still wins for wifi_mode when it is a valid value.
 Clients: main.py's window on Linux, the Decky plugin's backend and cli.py.
 """
 
@@ -22,11 +25,13 @@ import signal
 import socketserver
 import sys
 import threading
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 import crash_report
 import net_sync
+import qt_platform
 from adb_manager import ADBManager
+from qt_platform import settings_file
 from tether_manager import ACTIVE_CONNECT_STATES, TetherManager, temperature_zone
 
 HOST = "127.0.0.1"
@@ -46,6 +51,9 @@ log = logging.getLogger(__name__)
 # One lock around every TetherManager call: the monitor callbacks and request
 # threads share the same manager.
 _TETHER_LOCK = threading.Lock()
+# Serializes settings-set (apply and save) so two requests cannot write the file
+# out of order. Settings never take _TETHER_LOCK.
+_SETTINGS_LOCK = threading.Lock()
 
 # The window's log and the service's own log share this folder with relay.log.
 # Each source maps to exactly one file.
@@ -106,6 +114,51 @@ def _settings(tether) -> Dict[str, Any]:
     }
 
 
+def _settings_path() -> Optional[str]:
+    """Where settings.json lives: the platform config folder (None if it cannot be made)."""
+    try:
+        return settings_file.settings_path(qt_platform.current().config_dir())
+    except (OSError, RuntimeError):
+        log.warning("config folder unavailable; service settings will not persist")
+        return None
+
+
+def _persist(tether, path: Optional[str] = None) -> bool:
+    """Save the effective persisted settings (not only the changed key); True if written.
+
+    The caller holds _SETTINGS_LOCK. settings_file keeps only the persisted keys.
+    """
+    target = path if path is not None else _settings_path()
+    if not target:
+        return False
+    return settings_file.save_settings(target, _settings(tether))
+
+
+def apply_saved_settings(tether, path: Optional[str] = None, env=None) -> dict:
+    """Load settings.json into the tether at service start; return what was applied (#117).
+
+    Order, highest first: a valid QT_WIFI_MODE env var wins for wifi_mode; then the
+    file; then the TetherManager defaults (auto_reconnect on, wifi_mode off). A
+    missing or bad file leaves the defaults in place.
+    """
+    env = os.environ if env is None else env
+    target = path if path is not None else _settings_path()
+    saved = settings_file.load_settings(target) if target else {}
+    applied: Dict[str, Any] = {}
+    if "auto_reconnect" in saved:
+        tether.auto_reconnect = saved["auto_reconnect"]
+        applied["auto_reconnect"] = saved["auto_reconnect"]
+    if "wifi_mode" in saved:
+        if env.get("QT_WIFI_MODE") in settings_file.WIFI_MODES:
+            log.info("wifi_mode: QT_WIFI_MODE is set, so the saved value is not used")
+        else:
+            tether.wifi_mode = saved["wifi_mode"]
+            applied["wifi_mode"] = saved["wifi_mode"]
+    if applied:
+        log.info("settings loaded from %s: %s", target, applied)
+    return applied
+
+
 def _settings_set(tether, req) -> dict:
     updates = req.get("settings")
     if not isinstance(updates, dict):
@@ -124,25 +177,31 @@ def _settings_set(tether, req) -> dict:
     clean: Dict[str, Any] = {}
     for key, value in updates.items():
         key = aliases.get(key, key)
-        if key in ("auto_reconnect", "crash_reports"):
-            if not isinstance(value, bool):
-                return {"ok": False, "error": "bad " + key}
-            clean[key] = value
-        elif key == "wifi_mode":
-            if value not in ("off", "sync", "leave"):
-                return {"ok": False, "error": "bad wifi_mode: " + str(value)}
-            clean[key] = value
-        else:
+        if key not in ("auto_reconnect", "wifi_mode", "crash_reports"):
             return {"ok": False, "error": "unknown setting: " + str(key)}
+        if not settings_file.valid_value(key, value):
+            if key == "wifi_mode":
+                return {"ok": False, "error": "bad wifi_mode: " + str(value)}
+            return {"ok": False, "error": "bad " + key}
+        clean[key] = value
 
-    for key, value in clean.items():
-        if key == "auto_reconnect":
-            tether.auto_reconnect = value
-        elif key == "wifi_mode":
-            tether.wifi_mode = value
-        elif key == "crash_reports":
-            crash_report.set_enabled(value)
-    return {"ok": True, "settings": _settings(tether)}
+    with _SETTINGS_LOCK:
+        for key, value in clean.items():
+            if key == "auto_reconnect":
+                tether.auto_reconnect = value
+            elif key == "wifi_mode":
+                tether.wifi_mode = value
+            elif key == "crash_reports":
+                crash_report.set_enabled(value)
+        # crash_report.set_enabled saves its own file, so a crash-only change
+        # has nothing for settings.json to write.
+        if not any(key in settings_file.PERSISTED_KEYS for key in clean):
+            return {"ok": True, "settings": _settings(tether), "persisted": True}
+        persisted = _persist(tether)
+        answer = {"ok": True, "settings": _settings(tether), "persisted": persisted}
+    if not persisted:
+        answer["warning"] = "applied, but not saved: the setting resets on restart"
+    return answer
 
 
 def _wifi_sync(tether, find_serial) -> dict:
@@ -379,6 +438,10 @@ def _install_stop_handler(
 def serve(host: str = HOST, port: int = PORT, stop_on_sigterm: bool = False) -> None:
     """Run the service until stopped.
 
+    The saved settings load after the bind and before the USB monitor starts, so
+    a saved auto_reconnect off also stops the monitor (#117). Order: QT_WIFI_MODE
+    (valid) for wifi_mode, then settings.json, then the defaults.
+
     stop_on_sigterm installs the SIGTERM stop (#110). Only the program's main()
     asks for it, so tests that call serve() keep the process's signals.
     """
@@ -393,6 +456,7 @@ def serve(host: str = HOST, port: int = PORT, stop_on_sigterm: bool = False) -> 
     except OSError:
         print(f"qtetherd: port {port} is already in use", file=sys.stderr)
         raise SystemExit(1)
+    apply_saved_settings(tether)
     if tether.auto_reconnect:
         on_connected, on_disconnected = _monitor_callbacks(tether)
         adb.start_monitoring(on_connected=on_connected, on_disconnected=on_disconnected)

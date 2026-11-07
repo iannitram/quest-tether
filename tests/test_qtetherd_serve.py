@@ -20,6 +20,8 @@ class Serve(unittest.TestCase):
         self.dir = tmp.name
         self.patches = [
             patch("qtetherd.crash_report.data_dir", return_value=self.dir),
+            # No real settings.json is read or written (#117).
+            patch("qtetherd._settings_path", return_value=os.path.join(self.dir, "settings.json")),
             patch("qtetherd.crash_report.install"),
             patch("qtetherd.logging.basicConfig"),
         ]

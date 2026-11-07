@@ -12,6 +12,10 @@ class Platform:
         """Folder for logs and flags (relay.log, wifi-off.flag), created if missing."""
         raise NotImplementedError
 
+    def config_dir(self) -> str:
+        """Folder for settings.json (service settings, #117), created if missing."""
+        raise NotImplementedError
+
     def tool_path(self, name: str, base_dirs: Sequence[str]) -> Optional[str]:
         """Full path of a tool ("adb", "gnirehtet", "java") from base_dirs, else from PATH; None if absent."""
         raise NotImplementedError

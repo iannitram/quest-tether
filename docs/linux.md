@@ -57,3 +57,15 @@ The output is `dist/quest-tether-linux.tar.gz`. It unpacks to one `quest-tether/
 `install.sh` does not load the Decky zip into Decky. It prints where the zip is, and the player installs it from Decky's developer settings. This keeps the install to one sudo prompt.
 
 The unit tests (`tests/test_linux_build_script.py`) run the script with fake `pyinstaller`, `pnpm` and `zip` on PATH and check the tarball's layout. They do not run PyInstaller.
+
+## Saved settings (#117)
+
+The service keeps two settings in `$XDG_CONFIG_HOME/quest-tether/settings.json` (default `~/.config/quest-tether/settings.json`): auto-reconnect and the headset Wi-Fi mode (`off`, `sync` or `leave`). The window's switches and the CLI change them through the service, which saves each change right away.
+
+When the service starts, the values are chosen in this order, and the highest one wins:
+
+1. A valid `QT_WIFI_MODE` environment variable (`off`, `sync` or `leave`) sets the Wi-Fi mode. An invalid value is ignored.
+2. The saved `settings.json`. A missing, unreadable or bad file, or a bad value in it, is logged once and that value falls back to the next rule.
+3. The built-in defaults: auto-reconnect on, Wi-Fi mode `off`.
+
+Auto-reconnect has no environment variable; only the file sets it. The file is written atomically (a temporary file, then a rename), so a crash mid-save leaves the old file. If the save fails (a full or read-only disk), the change still applies for this run, the window shows a warning, and the setting goes back to its saved value on the next start. Crash reports keep their own setting file.

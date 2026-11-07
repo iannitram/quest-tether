@@ -73,6 +73,11 @@ class LinuxPlatform(Platform):
         os.makedirs(path, exist_ok=True)
         return path
 
+    def config_dir(self) -> str:
+        path = linux_paths.config_dir_path(os.environ, os.path.expanduser("~"))
+        os.makedirs(path, exist_ok=True)
+        return path
+
     def tool_path(self, name: str, base_dirs: Sequence[str]) -> Optional[str]:
         for base in base_dirs:
             candidate = os.path.join(base, name)

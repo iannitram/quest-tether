@@ -33,6 +33,15 @@ class Basics(unittest.TestCase):
             self.assertEqual(path, tmp + "/quest-tether")
             self.assertTrue(os.path.isdir(path))
 
+    def test_config_dir_is_created_under_xdg_config_home(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}),
+        ):
+            path = LinuxPlatform().config_dir()
+            self.assertEqual(path, tmp + "/quest-tether")
+            self.assertTrue(os.path.isdir(path))
+
     def test_relay_command_is_the_native_relay(self):
         self.assertEqual(
             LinuxPlatform().relay_command("/t", "S1"), ["/t/gnirehtet", "run", "S1"]

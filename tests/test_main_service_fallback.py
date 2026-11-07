@@ -254,5 +254,127 @@ class Reenable(unittest.TestCase):
         w._connect_btn.configure.assert_called_with(state="normal")
 
 
+LABELS = {
+    "Headset Wi-Fi: off": "off",
+    "Headset Wi-Fi: match PC": "sync",
+    "Headset Wi-Fi: leave": "leave",
+}
+
+
+def settings_window(**kw):
+    """A window with the switches as stubs and the real settings-read methods (#117)."""
+    base = dict(
+        _auto_reconnect_var=Mock(),
+        _crash_reports_var=Mock(),
+        _wifi_menu=Mock(),
+        _wifi_labels=dict(LABELS),
+        _service_request=Mock(),
+        _push_setting=Mock(),
+        after=Mock(),
+    )
+    base.update(kw)
+    w = window(**base)
+    w._load_service_settings = MAIN.QuestTetherApp._load_service_settings.__get__(w)
+    w._apply_settings_reply = MAIN.QuestTetherApp._apply_settings_reply.__get__(w)
+    return w
+
+
+class SettingsRead(unittest.TestCase):
+    def _load(self, w):
+        with patch.object(MAIN.threading, "Thread", _ImmediateThread):
+            w._load_service_settings()
+
+    def test_saved_settings_set_the_switches_on_the_tk_thread(self):
+        w = settings_window(
+            _service_request=Mock(
+                return_value={
+                    "ok": True,
+                    "settings": {"auto_reconnect": False, "wifi_mode": "leave"},
+                }
+            ),
+        )
+        # The reply is applied through after(0, ...), so run that call now.
+        w.after = lambda ms, fn=None, *a: fn(*a) if fn else None
+        self._load(w)
+        w._service_request.assert_called_once_with(
+            {"cmd": "settings-get"}, timeout=2.0, quiet=True
+        )
+        w._auto_reconnect_var.set.assert_called_once_with(False)
+        w._wifi_menu.set.assert_called_once_with("Headset Wi-Fi: leave")
+
+    def test_loading_never_writes_a_setting_back(self):
+        w = settings_window(
+            _service_request=Mock(
+                return_value={"ok": True, "settings": {"auto_reconnect": False, "wifi_mode": "sync"}}
+            ),
+        )
+        w.after = lambda ms, fn=None, *a: fn(*a) if fn else None
+        self._load(w)
+        w._push_setting.assert_not_called()
+
+    def test_crash_report_switch_follows_the_service(self):
+        w = settings_window(
+            _service_request=Mock(
+                return_value={"ok": True, "settings": {"crash_reports": False}}
+            ),
+        )
+        w.after = lambda ms, fn=None, *a: fn(*a) if fn else None
+        self._load(w)
+        w._crash_reports_var.set.assert_called_once_with(False)
+
+    def test_no_answer_keeps_the_defaults_and_logs_nothing(self):
+        w = settings_window(_service_request=Mock(return_value=None))
+        self._load(w)
+        w.after.assert_not_called()
+        w._log_panel.append.assert_not_called()
+        w._auto_reconnect_var.set.assert_not_called()
+        w._wifi_menu.set.assert_not_called()
+
+    def test_failed_reply_is_ignored(self):
+        w = settings_window(
+            _service_request=Mock(
+                return_value={"ok": False, "error": "nope", "settings": {"auto_reconnect": False}}
+            ),
+        )
+        self._load(w)
+        w.after.assert_not_called()
+
+    def test_unknown_wifi_mode_is_ignored_and_other_keys_still_apply(self):
+        w = settings_window()
+        w._apply_settings_reply({
+            "ok": True,
+            "settings": {"auto_reconnect": False, "wifi_mode": "sideways"},
+        })
+        w._wifi_menu.set.assert_not_called()
+        w._auto_reconnect_var.set.assert_called_once_with(False)
+
+    def test_non_boolean_values_are_ignored(self):
+        w = settings_window()
+        w._apply_settings_reply({"ok": True, "settings": {"auto_reconnect": "no", "crash_reports": 0}})
+        w._auto_reconnect_var.set.assert_not_called()
+        w._crash_reports_var.set.assert_not_called()
+
+    def test_not_in_service_mode_sends_nothing(self):
+        w = settings_window(_service_mode=False)
+        self._load(w)
+        w._service_request.assert_not_called()
+
+    def test_a_save_warning_is_logged(self):
+        w = settings_window(
+            _reprobe_service=Mock(return_value=True),
+            _service_request=Mock(return_value={
+                "ok": True,
+                "warning": "applied, but not saved: the setting resets on restart",
+            }),
+        )
+        w._push_setting = MAIN.QuestTetherApp._push_setting.__get__(w)
+        w.after = lambda ms, fn=None, *a: fn(*a) if fn else None
+        with patch.object(MAIN.threading, "Thread", _ImmediateThread):
+            w._push_setting("wifi_mode", "leave")
+        w._log_panel.append.assert_called_once_with(
+            "applied, but not saved: the setting resets on restart"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
