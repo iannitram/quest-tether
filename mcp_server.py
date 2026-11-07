@@ -15,6 +15,7 @@ each one refuses unless the caller passes "confirm": true.
 
 import contextlib
 import json
+import os
 import signal
 import sys
 from dataclasses import dataclass
@@ -429,10 +430,15 @@ class _KeepInProcess:
         if tether is None:
             return
         try:
-            state = getattr(getattr(tether, "stats", None), "state", None)
-            live = tether.is_relay_running() or state in LIVE_STATES
-            if live:
+            if tether.is_relay_running():
                 local.disconnect()
+                return
+            state = getattr(getattr(tether, "stats", None), "state", None)
+            if state in LIVE_STATES:
+                # Reconnecting with no relay up: stop the tether itself. Not
+                # local.disconnect(), whose sweep kills any relay on the port,
+                # which could be one qtetherd started during the session.
+                tether.disconnect(headset_present=local.adb.find_serial() is not None)
         except Exception:
             pass
 
@@ -473,6 +479,32 @@ def _line_reply(line: str, backend_factory) -> Optional[dict]:
     return handle_message(message, backend_factory)
 
 
+def _take_stdin():
+    """Move the real stdin to a private file and point fd 0 at /dev/null.
+
+    adb, the relay and systemctl inherit fd 0. Left alone, one of them can read
+    a request the client queued during a tool call, and the request is lost.
+    Falls back to sys.stdin when fd 0 cannot be moved.
+    """
+    try:
+        private = os.dup(0)
+    except OSError:
+        return sys.stdin
+    try:
+        null = os.open(os.devnull, os.O_RDONLY)
+        try:
+            os.dup2(null, 0)
+        finally:
+            os.close(null)
+        return open(private, "r", encoding="utf-8", errors="replace")
+    except OSError:
+        try:
+            os.close(private)
+        except OSError:
+            pass
+        return sys.stdin
+
+
 def serve(stdin=None, stdout=None, backend_factory=None) -> int:
     """Read JSON-RPC lines from stdin and answer on stdout until stdin closes.
 
@@ -480,7 +512,7 @@ def serve(stdin=None, stdout=None, backend_factory=None) -> int:
     tether this process started in-process is brought down, so the relay does
     not outlive the server.
     """
-    source = stdin if stdin is not None else sys.stdin
+    source = stdin if stdin is not None else _take_stdin()
     sink = stdout if stdout is not None else sys.stdout
     picker = _KeepInProcess(backend_factory or cli_commands.make_backend)
     restore = _install_signal_handlers() if stdin is None else (lambda: None)

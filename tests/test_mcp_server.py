@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -556,6 +557,17 @@ class LiveTether(FakeTether):
         return True
 
 
+class ReconnectingTether(FakeTether):
+    """No relay is up, but the tether is mid-reconnect."""
+
+    def __init__(self):
+        self.stats = type("Stats", (), {"state": mcp_server.TetherState.RECONNECTING})()
+        self.disconnects = []
+
+    def disconnect(self, headset_present=True):
+        self.disconnects.append(headset_present)
+
+
 class ShutdownTests(unittest.TestCase):
     """No relay may outlive the server (stdin closed, signal, closed stdout)."""
 
@@ -577,6 +589,15 @@ class ShutdownTests(unittest.TestCase):
         backend = self.local_backend(live=False)
         run([tool_call("connect", {"confirm": True})], lambda: backend)
         self.assertEqual([c[0] for c in backend.calls], ["connect"])
+
+    def test_reconnecting_without_a_relay_stops_the_tether_without_the_sweep(self):
+        backend = FakeBackend(self.tmp.name, mode="in-process")
+        backend._tether = ReconnectingTether()
+        run([tool_call("connect", {"confirm": True})], lambda: backend)
+        # local.disconnect() would run the stale-relay sweep and could kill a
+        # relay that qtetherd started during the session.
+        self.assertEqual([c[0] for c in backend.calls], ["connect"])
+        self.assertEqual(backend._tether.disconnects, [False])
 
     def test_a_service_backend_is_never_disconnected_on_exit(self):
         backend = FakeBackend(self.tmp.name, mode="service")
@@ -639,6 +660,46 @@ class ShutdownTests(unittest.TestCase):
             self.assertIs(installed[mcp_server.signal.SIGTERM], mcp_server._stop_on_signal)
             restore()
         self.assertEqual(installed[mcp_server.signal.SIGTERM], "old-%s" % int(mcp_server.signal.SIGTERM))
+
+
+CHILD_SERVER = """
+import subprocess, sys
+sys.path.insert(0, {root!r})
+import mcp_server
+
+class Backend:
+    mode = "service"
+    def status(self):
+        # A child that reads stdin to the end, as `adb shell` can.
+        subprocess.run([sys.executable, "-c", "import sys; sys.stdin.read()"])
+        return {{"state": "idle"}}
+
+sys.exit(mcp_server.serve(backend_factory=lambda: Backend()))
+"""
+
+
+@unittest.skipUnless(os.name == "posix", "fd 0 handling is checked on Linux")
+class ChildStdinTests(unittest.TestCase):
+    def test_a_child_cannot_swallow_a_queued_request(self):
+        import time
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        proc = subprocess.Popen(
+            [sys.executable, "-c", CHILD_SERVER.format(root=root)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            proc.stdin.write(tool_call("status", None, 1) + "\n")
+            proc.stdin.flush()
+            time.sleep(0.5)  # the child is running now
+            proc.stdin.write(request("ping", None, 2) + "\n")
+            proc.stdin.close()
+            out, _ = proc.communicate(timeout=30)
+        finally:
+            proc.kill()
+            proc.wait()
+        ids = [json.loads(line)["id"] for line in out.splitlines()]
+        self.assertEqual(ids, [1, 2])
 
 
 if __name__ == "__main__":
