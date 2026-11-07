@@ -111,4 +111,8 @@ Where it stands (2026-11-07): Dev Loop. The Linux platform, the service, the Dec
 6. Command line and agents (scope added by the owner, 2026-11-04). Done: CLI merged (#88). Open: try it on the headset and package it (#74), the MCP server on the same command layer (#75).
 7. Device checks before 1.0. Open: the multi-hour soak on both OSes (#3; summary tool merged in #89), the Windows questions (needs a Windows PC with the headset): USB audio chain (#7), audio output and display layout revert (#8), Rust relay on Windows (#9).
 
-After 1.0: charge control (#5), peer-survey ideas (#68). Trackers: #12 (goals and rules), #90 (status and next steps).
+8. Design pass (R04 in my pipeline), the last stage before 1.0: the window and the Decky panel are checked against the shared design system and the differences filed as `design-pass` issues. The CLI and the service have no UI and skip it.
+
+Order (owner, 2026-11-07): Linux 1.0 first. The Windows parts (#7, #8, #9, #10 and the Windows halves of #3 and #74) wait until after the Linux release.
+
+After 1.0: charge control (#5), peer-survey ideas (#68). Tracker: #12 (goals and rules).
