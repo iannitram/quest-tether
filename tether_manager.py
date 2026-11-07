@@ -49,6 +49,10 @@ ACTIVE_CONNECT_STATES = (
     TetherState.RECONNECTING,
 )
 
+# Returned by _start_split_relay when disconnect() stopped the start (#103). The
+# caller returns without setting any state: disconnect owns STOPPING and IDLE.
+STOPPED_BY_DISCONNECT = "relay start stopped by disconnect"
+
 
 def _state_for_tunnel(tun0_present: bool, relay_clients: Optional[int] = None) -> TetherState:
     """Return the user-visible state for one tunnel check (#1, #62).
@@ -130,8 +134,13 @@ class TetherManager:
         self.gnirehtet_path = gnirehtet_path or self._find_gnirehtet()
 
         self._process: Optional[subprocess.Popen] = None
+        # Guards spawn and kill of the relay (#103): the health thread's reconnect and
+        # disconnect() both reach self._process, and a spawn must not land after a kill.
+        self._proc_lock = threading.RLock()
         self._health_thread: Optional[threading.Thread] = None
         self._running = False
+        # True once connect() has started a session. See _stop_requested (#103).
+        self._session_started = False
         self._auto_reconnect = True
         self._reconnect_attempts = 0
 
@@ -423,7 +432,8 @@ class TetherManager:
         """Poll until the relay listens on port. False if it dies first or the deadline passes."""
         deadline = time.monotonic() + self.RELAY_LISTEN_TIMEOUT
         while True:
-            if self._process is None or self._process.poll() is not None:
+            proc = self._process
+            if proc is None or proc.poll() is not None:
                 return False
             if self._port_open(port):
                 return True
@@ -447,7 +457,8 @@ class TetherManager:
         """Split mode (#66): start the relay alone, wait for its port, then start the
         Quest client ourselves. Returns None when the relay listens and the client
         start was accepted; else the reason (the caller logs it). Kills only the relay
-        it started, and nothing else."""
+        it started, and nothing else. Returns STOPPED_BY_DISCONNECT when disconnect()
+        came first (#103); the caller then sets no state."""
         port = self.RELAY_PORT
         blocker = self._port_blocker(port)
         if blocker is not None:
@@ -457,15 +468,19 @@ class TetherManager:
             )
 
         try:
-            self._spawn_relay(serial)
+            proc = self._spawn_relay_if_live(serial)
         except FileNotFoundError:
             return "Java or gnirehtet JAR not found"
         except Exception as e:
             return str(e)
-        self._log(f"relay started (PID {self._process.pid}), waiting for port {port}")
+        if proc is None:
+            return STOPPED_BY_DISCONNECT
+        self._log(f"relay started (PID {proc.pid}), waiting for port {port}")
 
         if not self._wait_until_listening(port):
-            if self._process.poll() is not None:
+            if self._abort_if_stopped():
+                return STOPPED_BY_DISCONNECT
+            if proc.poll() is not None:
                 self._join_relay_pump()  # relay.log must hold its last line first
                 last = self._relay_log_last_line()
                 reason = "relay exited at startup: " + (
@@ -479,6 +494,9 @@ class TetherManager:
                 self._kill_process()
             return reason
 
+        # disconnect() may have come during the listen wait: no client start then (#103)
+        if self._abort_if_stopped():
+            return STOPPED_BY_DISCONNECT
         if not self.adb.start_gnirehtet_client(serial, port):
             self._kill_process()
             return self._client_refusal_text()
@@ -487,8 +505,10 @@ class TetherManager:
     def _start_run_relay(self, serial: str) -> bool:
         """Run mode: `gnirehtet run` starts relay, tunnel and client in one process."""
         try:
-            self._spawn_relay(serial)
-            self._log(f"gnirehtet started (PID {self._process.pid})")
+            proc = self._spawn_relay_if_live(serial)
+            if proc is None:
+                return False  # disconnect() came first (#103)
+            self._log(f"gnirehtet started (PID {proc.pid})")
         except FileNotFoundError:
             self._log(f"Java or JAR not found: {self.gnirehtet_path}")
             self._set_state(TetherState.ERROR, "Java or gnirehtet JAR not found")
@@ -500,32 +520,77 @@ class TetherManager:
 
         # Give it a moment, then check it didn't die immediately
         time.sleep(1.5)
-        if self._process.poll() is not None:
+        if self._stop_requested():
+            return False
+        if proc.poll() is not None:
             self._log("gnirehtet exited immediately — check Java and JAR path")
             self._set_state(TetherState.ERROR, "Process exited immediately")
             return False
         return True
 
     def _kill_process(self):
-        """Kill the gnirehtet run process. Escalates through terminate → kill → platform kill."""
-        if not self._process:
-            return
-        pid = self._process.pid
-        self._log(f"Stopping gnirehtet (PID {pid})...")
-        self._reset_relay_clients()
-        try:
-            self._process.terminate()
-            self._process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            self._log("Didn't stop gracefully — killing...")
-            self._process.kill()
+        """Kill the gnirehtet run process. Escalates through terminate → kill → platform kill.
+
+        Under _proc_lock (#103): a spawn in another thread cannot land between the
+        kill and the clear of self._process.
+        """
+        with self._proc_lock:
+            proc = self._process
+            if not proc:
+                return
+            pid = proc.pid
+            self._log(f"Stopping gnirehtet (PID {pid})...")
+            self._reset_relay_clients()
             try:
-                self._process.wait(timeout=2)
+                proc.terminate()
+                proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                self.platform.kill(pid)
-        self._process = None
-        self.stats.relay_pid = None
-        self._join_relay_pump()
+                self._log("Didn't stop gracefully — killing...")
+                proc.kill()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self.platform.kill(pid)
+            self._process = None
+            self.stats.relay_pid = None
+            self._join_relay_pump()
+
+    def _stop_requested(self) -> bool:
+        """True once a started session has been stopped: disconnect(), or the health
+        thread giving up (#103). A manager that never connected is not stopped, since
+        the reconnect and heal paths also run on one in unit tests."""
+        return self._session_started and not self._running
+
+    def _abort_if_stopped(self) -> bool:
+        """If a stop was requested, kill the relay and return True (#103).
+
+        Used where a relay this path started could be left behind. Kills under
+        _proc_lock, so a racing spawn cannot slip past it.
+        """
+        if not self._stop_requested():
+            return False
+        with self._proc_lock:
+            if self._process is not None:
+                self._kill_process()
+        self._log("Disconnect during reconnect — relay stopped")
+        return True
+
+    def _spawn_relay_if_live(self, serial: str) -> Optional[subprocess.Popen]:
+        """Spawn the relay unless a stop was requested (#103). Returns the new process,
+        or None when stopped.
+
+        The check and the spawn run under _proc_lock, so disconnect() either sees the
+        new process and kills it, or its stop is seen here before the spawn. A stop
+        that lands during the spawn is caught by the recheck, which kills the relay.
+        """
+        with self._proc_lock:
+            if self._abort_if_stopped():
+                return None
+            self._spawn_relay(serial)
+            proc = self._process
+            if self._abort_if_stopped():
+                return None
+            return proc
 
     def force_kill(self):
         """Immediate process tree kill. Used on app quit — no logging, no ADB cleanup.
@@ -569,7 +634,8 @@ class TetherManager:
 
     def is_relay_running(self) -> bool:
         """Check if the gnirehtet process is alive."""
-        return self._process is not None and self._process.poll() is None
+        proc = self._process
+        return proc is not None and proc.poll() is None
 
     def note_usb_event(self, message: str):
         """Log a USB event the service saw (#86). Changes no state."""
@@ -584,6 +650,7 @@ class TetherManager:
             return True
 
         self._running = True
+        self._session_started = True
         self._reconnect_attempts = 0
         self.stats.device_serial = serial
 
@@ -602,6 +669,8 @@ class TetherManager:
         if self.relay_mode == "split":
             self._log("Starting gnirehtet relay (split mode)...")
             error = self._start_split_relay(serial)
+            if error == STOPPED_BY_DISCONNECT:
+                return False  # disconnect() owns the state now (#103)
             if error:
                 self._log(error)
                 self._set_state(TetherState.ERROR, error)
@@ -944,14 +1013,24 @@ class TetherManager:
     def _heal(self, serial: str, action: Heal) -> bool:
         """Relay is alive but tun0 keeps vanishing. Escalate gently:
         1. re-issue the client start   2. restart adb server + client
-        3. full relay reconnect.  Returns True if the health loop should exit."""
+        3. full relay reconnect.  Returns True if the health loop should exit.
+
+        Once a stop was requested (#103) it returns True at each step, before the
+        next adb call or state change, so a disconnect is never followed by a client
+        start or a Connected state."""
+        if self._stop_requested():
+            return True
         self._set_state(TetherState.RECONNECTING)
 
         # Is the headset even visible on USB?
         quest = self.adb.find_quest()
         if not quest or quest["status"] != "device":
             self._log("Headset not visible to adb — restarting adb server")
+            if self._stop_requested():
+                return True
             self.adb.restart_adb_server()
+            if self._stop_requested():
+                return True
             quest = self.adb.find_quest()
             if not quest or quest["status"] != "device":
                 self._log("Headset still not on USB — full reconnect")
@@ -961,12 +1040,18 @@ class TetherManager:
         start_refused = False
         if action is Heal.RESTART_CLIENT:
             self._log("tun0 missing while relay is up — re-issuing client start")
+            if self._stop_requested():
+                return True
             if not self.adb.start_gnirehtet_client(serial, self.RELAY_PORT):
                 self._log_client_start_refused()
                 start_refused = True
         elif action is Heal.RESTART_ADB_THEN_CLIENT:
             self._log("Still no tun0 — restarting adb server, then client")
+            if self._stop_requested():
+                return True
             self.adb.restart_adb_server()
+            if self._stop_requested():
+                return True  # a stop during the adb restart: no client start (#103)
             if not self.adb.start_gnirehtet_client(serial, self.RELAY_PORT):
                 self._log_client_start_refused()
                 start_refused = True
@@ -982,13 +1067,15 @@ class TetherManager:
         for _ in range(6):
             time.sleep(1.5)
             tun0_up = self.adb.is_vpn_up(serial)
+            if self._stop_requested():
+                return True  # no Connected state after a stop (#103)
             if tun0_up and self._tunnel_state(True) is TetherState.CONNECTED:
                 self._log("Tunnel restored")
                 self._reconnect_attempts = 0
                 self._set_state(TetherState.CONNECTED)
                 self._prev_stat_time = 0  # don't compute a rate across the gap
                 return False
-        if tun0_up:
+        if tun0_up and not self._stop_requested():
             # tun0 is up but the relay has counted no client (#62). The health loop
             # promotes it once a client shows.
             self._set_state(TetherState.STARTING)
@@ -1145,7 +1232,12 @@ class TetherManager:
     # --- Auto-Reconnect ---
 
     def _attempt_reconnect(self, serial: str):
-        """Kill and restart the gnirehtet run process."""
+        """Kill and restart the gnirehtet run process.
+
+        Stops without a spawn, a client start or a state change once disconnect()
+        has been called (#103). disconnect() owns the relay and the state then."""
+        if self._stop_requested():
+            return
         if self._reconnect_attempts >= self.MAX_RECONNECT_ATTEMPTS:
             self._log(f"Max reconnect attempts ({self.MAX_RECONNECT_ATTEMPTS}) reached")
             self._set_state(TetherState.ERROR, "Max reconnect attempts reached")
@@ -1165,9 +1257,13 @@ class TetherManager:
         # Kill the old process
         self._kill_process()
         time.sleep(self.RECONNECT_DELAY)
+        if self._abort_if_stopped():
+            return
 
         # Check device is still on USB
         quest = self.adb.find_quest()
+        if self._abort_if_stopped():
+            return
         if not quest or quest["status"] != "device":
             self._log("Device not found on USB — waiting...")
             self._wait_for_device_and_reconnect(serial)
@@ -1180,14 +1276,18 @@ class TetherManager:
         self._kill_stale_process()
         if self.relay_mode == "split":
             error = self._start_split_relay(actual_serial)
+            if error == STOPPED_BY_DISCONNECT:
+                return
             if error:
                 self._log(f"Failed to restart: {error}")
                 return
-            self._log(f"relay restarted (PID {self._process.pid})")
+            self._log("relay restarted")
         else:
             try:
-                self._spawn_relay(actual_serial)
-                self._log(f"gnirehtet restarted (PID {self._process.pid})")
+                proc = self._spawn_relay_if_live(actual_serial)
+                if proc is None:
+                    return  # disconnect() came first (#103)
+                self._log(f"gnirehtet restarted (PID {proc.pid})")
             except Exception as e:
                 self._log(f"Failed to restart: {e}")
                 return
@@ -1196,7 +1296,13 @@ class TetherManager:
         time.sleep(2.0)
         tun0_up = False
         for i in range(10):
+            # A stop during this wait leaves the relay to disconnect(): no client
+            # start, no Connected state (#103).
+            if self._stop_requested():
+                return
             tun0_up = self.adb.is_vpn_up(actual_serial)
+            if self._stop_requested():
+                return
             if tun0_up and self._tunnel_state(True) is TetherState.CONNECTED:
                 self._set_state(TetherState.CONNECTED)
                 self._reconnect_attempts = 0
@@ -1211,6 +1317,8 @@ class TetherManager:
                     return
             time.sleep(1.5)
 
+        if self._stop_requested():
+            return
         if tun0_up:
             # tun0 is up but no client is counted yet (#62): not Connected until one shows.
             self._set_state(TetherState.STARTING)
@@ -1234,6 +1342,8 @@ class TetherManager:
             if quest and quest["status"] == "device":
                 self._log(f"Device reconnected ({quest['serial']})")
                 time.sleep(1)
+                if self._stop_requested():
+                    return  # disconnect() came during the wait (#103)
                 self._attempt_reconnect(quest["serial"])
                 return
 
