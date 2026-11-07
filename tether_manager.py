@@ -108,6 +108,9 @@ class TetherManager:
     VPN_CLOSE_DEADLINE = 6.0
     VPN_CLOSE_POLL = 0.5
     VPN_FORCE_STOP_WAIT = 2.0
+    # Error-path restore caps (#116): the VPN wait and the Wi-Fi wait.
+    ERROR_RESTORE_VPN_WAIT = 2.0
+    ERROR_RESTORE_WIFI_WAIT = 2.0
     # Quit path (force_kill): best-effort STOP, each adb call capped at this.
     FORCE_KILL_STOP_TIMEOUT = 2.0
     # Split relay (#66): relay modes, and how long/how often to wait for the port.
@@ -925,6 +928,8 @@ class TetherManager:
         spawn) is not a live tunnel: it takes the missing-tunnel branch, and the
         awake-gated heal re-issues the client start instead of staying in Starting.
         """
+        if self._stop_requested():
+            return   # disconnect() owns the state after a stop (#116)
         tunnel_state = self._tunnel_state(tun_ok)
         if self.stats.state != tunnel_state:
             self._set_state(tunnel_state)
@@ -972,11 +977,11 @@ class TetherManager:
                 return
             unreadable = True
         if self._restart_cap_reached():
-            self._give_up_healing(self._keeps_dropping_text())
+            self._give_up_healing(self._keeps_dropping_text(), serial)
             return
         action = self._healer.escalate(now)
         if action is Heal.GIVE_UP:
-            self._give_up_healing("Max reconnect attempts reached")
+            self._give_up_healing("Max reconnect attempts reached", serial)
             return
         if unreadable and action is Heal.RESTART_CLIENT:
             action = Heal.RESTART_ADB_THEN_CLIENT   # a wedged adb needs its server restarted first
@@ -987,17 +992,25 @@ class TetherManager:
             self._note_restart(time.time())
 
     def _relay_died(self, serial: str):
-        """The relay process exited: reconnect, waiting out the restart backoff."""
+        """The relay process exited: reconnect, waiting out the restart backoff.
+
+        Returns at once after a stop (#116): disconnect() owns the state then, so a
+        death seen during a stop does not set ERROR over STOPPING or IDLE."""
+        if self._stop_requested():
+            return
         self._log("gnirehtet process died!")
         self._tun_up_since = None
         if not (self._auto_reconnect and self._running):
             # No recovery will follow: stop the health loop too, so it does not log
             # this death every cycle and a later Connect starts the only loop (#108).
             self._running = False
+            # The relay is already dead, so only the headset's VPN and Wi-Fi need
+            # putting back, before ERROR (#116).
+            self._restore_headset_best_effort(serial)
             self._set_state(TetherState.ERROR, "Process died")
             return
         if self._restart_cap_reached():
-            self._give_up_healing(self._keeps_dropping_text())
+            self._give_up_healing(self._keeps_dropping_text(), serial)
             return
         self._set_state(TetherState.RECONNECTING)
         self._wait_backoff()
@@ -1033,8 +1046,14 @@ class TetherManager:
             "is running, and " + os.path.join(self._data_dir, "relay.log")
         )
 
-    def _give_up_healing(self, error: str):
-        """The one place auto-recovery stops for good."""
+    def _give_up_healing(self, error: str, serial: Optional[str] = None):
+        """The one place auto-recovery stops for good.
+
+        A no-op after a stop (#116): a disconnect that lands during the caller's
+        checks owns the state, so ERROR is not set over IDLE."""
+        if self._stop_requested():
+            return
+        serial = serial or self.stats.device_serial or self._health_serial
         restarts = self._liveness_now().restarts
         self._log(
             f"Auto-recovery stopped after {restarts} restarts with no tunnel — "
@@ -1044,7 +1063,38 @@ class TetherManager:
         # The relay may still be alive: kill it, or the next connect() finds the
         # port taken and fails (#107). ERROR then means no relay is running.
         self._kill_process()
+        # Then put the headset's VPN and Wi-Fi back, best effort (#116).
+        self._restore_headset_best_effort(serial)
         self._set_state(TetherState.ERROR, error)
+
+    def _restore_headset_best_effort(self, serial: Optional[str]) -> None:
+        """Error paths: STOP intent + Wi-Fi restore as disconnect() does, with short caps (#116).
+
+        Never raises. Skips when there is no serial or the headset is not listed,
+        so no adb call waits on an absent device. The relay is already stopped
+        by the caller."""
+        if not serial:
+            self._log("Error path: no headset serial — skipping the headset restore")
+            return
+        try:
+            if self.adb.find_serial() != serial:
+                self._log("Headset not reachable — VPN may still be on")
+                return
+            self._log("Error path: telling Quest to drop VPN...")
+            if not self.adb.stop_gnirehtet_client(serial, timeout=3.0):
+                self._log("Headset refused the STOP intent on the error path")
+            if not self._wait_vpn_closed(serial, deadline=self.ERROR_RESTORE_VPN_WAIT):
+                self._log("VPN still up on the error path — force-stopping...")
+                self.adb.force_stop_gnirehtet(serial)
+            self._log("Error path: toggling Wi-Fi to restore DNS...")
+            self.adb.toggle_wifi(serial, wait_seconds=self.ERROR_RESTORE_WIFI_WAIT)
+            self._clear_wifi_flag()
+            if self.adb.check_wifi_connectivity(serial):
+                self._log("Quest Wi-Fi restored on the error path")
+            else:
+                self._log("Could not confirm Wi-Fi restored — may need manual reconnect")
+        except Exception as e:
+            self._log(f"Best-effort headset restore failed: {e}")
 
     def _heal(self, serial: str, action: Heal) -> bool:
         """Relay is alive but tun0 keeps vanishing. Escalate gently:
@@ -1278,6 +1328,7 @@ class TetherManager:
             self._log(f"Max reconnect attempts ({self.MAX_RECONNECT_ATTEMPTS}) reached")
             self._running = False
             self._kill_process()  # no relay is left behind in ERROR (#107)
+            self._restore_headset_best_effort(serial)  # VPN and Wi-Fi back (#116)
             self._set_state(TetherState.ERROR, "Max reconnect attempts reached")
             return
 
