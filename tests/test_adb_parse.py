@@ -153,6 +153,101 @@ class VpnAgentState(unittest.TestCase):
             self.assertIsNone(manager.vpn_agent_state("quest-serial"))
 
 
+class HeadsetAwake(unittest.TestCase):
+    """is_headset_awake (#65): one dumpsys power call; None when unknown; never raises."""
+
+    def make_manager(self):
+        platform = Mock()
+        platform.no_window_flags.return_value = 0
+        return adb_manager.ADBManager(adb_path="adb", platform=platform)
+
+    @staticmethod
+    def result(returncode=0, stdout=""):
+        return subprocess.CompletedProcess([], returncode, stdout, "")
+
+    def probe(self, *reply):
+        manager = self.make_manager()
+        with patch.object(manager, "run_adb", side_effect=list(reply)) as run:
+            value = manager.is_headset_awake("quest-serial")
+        return value, run
+
+    def test_awake_is_true(self):
+        value, _ = self.probe(self.result(stdout="  mWakefulness=Awake\n"))
+        self.assertIs(value, True)
+
+    def test_asleep_and_dozing_are_false(self):
+        self.assertIs(self.probe(self.result(stdout="mWakefulness=Asleep\n"))[0], False)
+        self.assertIs(self.probe(self.result(stdout="mWakefulness=Dozing\n"))[0], False)
+
+    def test_no_wakefulness_line_is_unknown(self):
+        value, _ = self.probe(self.result(stdout="Power Manager state\n"))
+        self.assertIsNone(value)
+
+    def test_failed_or_timed_out_read_is_unknown(self):
+        self.assertIsNone(self.probe(self.result(returncode=1, stdout="mWakefulness=Awake"))[0])
+        self.assertIsNone(self.probe(self.result(returncode=1, stdout="Timeout"))[0])
+
+    def test_an_exception_from_run_adb_is_unknown(self):
+        manager = self.make_manager()
+        with patch.object(manager, "run_adb", side_effect=OSError("boom")):
+            self.assertIsNone(manager.is_headset_awake("quest-serial"))
+
+    def test_one_adb_call_with_a_short_timeout(self):
+        _, run = self.probe(self.result(stdout="mWakefulness=Awake"))
+        run.assert_called_once()
+        args, kwargs = run.call_args
+        self.assertEqual(args, ("-s", "quest-serial", "shell", "dumpsys", "power"))
+        self.assertEqual(kwargs, {"timeout": 3.0})
+
+
+class DeviceListed(unittest.TestCase):
+    """device_listed (#65): the serial in `adb devices -l` in any state; None when the call fails."""
+
+    OFFLINE = "1WMHH111111111\toffline usb:1-1 transport_id:3"
+    UNAUTH = "1WMHH111111111\tunauthorized usb:1-1 transport_id:3"
+
+    def listed(self, reply, serial="1WMHH111111111"):
+        manager = HeadsetAwake.make_manager(None)
+        with patch.object(manager, "run_adb", return_value=reply) as run:
+            value = manager.device_listed(serial)
+        run.assert_called_once_with("devices", "-l")
+        return value
+
+    @staticmethod
+    def reply(*lines, returncode=0):
+        text = "List of devices attached\n" + "".join(line + "\n" for line in lines)
+        return subprocess.CompletedProcess([], returncode, text, "")
+
+    def test_a_ready_headset_is_listed(self):
+        self.assertIs(self.listed(self.reply(DEVICE_LINE)), True)
+
+    def test_an_offline_line_is_listed_though_find_quest_cannot_see_it(self):
+        reply = self.reply(self.OFFLINE)
+        self.assertIs(self.listed(reply), True)
+        manager = HeadsetAwake.make_manager(None)
+        with patch.object(manager, "run_adb", return_value=reply):
+            self.assertIsNone(manager.find_quest(), "the line has no model or product")
+
+    def test_an_unauthorized_line_is_listed(self):
+        self.assertIs(self.listed(self.reply(self.UNAUTH)), True)
+
+    def test_a_no_permission_line_is_listed(self):
+        self.assertIs(self.listed(self.reply(NO_PERM_LINE), serial="1WMHH000000000"), True)
+
+    def test_a_list_without_the_serial_is_not_listed(self):
+        self.assertIs(self.listed(self.reply(DEVICE_LINE), serial="OTHER"), False)
+        self.assertIs(self.listed(self.reply()), False)
+
+    def test_a_failed_or_timed_out_devices_call_is_unknown(self):
+        failed = subprocess.CompletedProcess([], 1, "", "Timeout")
+        self.assertIsNone(self.listed(failed))
+
+    def test_an_exception_from_run_adb_is_unknown(self):
+        manager = HeadsetAwake.make_manager(None)
+        with patch.object(manager, "run_adb", side_effect=OSError("boom")):
+            self.assertIsNone(manager.device_listed("1WMHH111111111"))
+
+
 class UdevFiles(unittest.TestCase):
     def test_rule_file_is_exactly_one_line(self):
         with open(os.path.join(ROOT, "packaging", "linux", "51-quest-tether.rules")) as f:

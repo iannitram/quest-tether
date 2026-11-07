@@ -9,6 +9,9 @@ AWAKE_PROBE_INTERVAL = 5.0
 ASLEEP_PROBE_INTERVAL = 15.0
 INITIAL_BACKOFF = 60.0
 MAX_BACKOFF = 300.0
+# Ours, not from quest-vd-wired: about 3 probe ticks of "no reading" before a
+# listed-but-unreadable headset (offline, unauthorized, wedged adb) may restart.
+UNREADABLE_GRACE = 15.0
 
 
 def parse_wakefulness(text: str | None) -> bool | None:
@@ -36,18 +39,20 @@ class Liveness:
     next_probe_at: float | None = None
     next_restart_at: float | None = None
     restarts: int = 0
+    unreadable_since: float | None = None
 
     def connected(self):
         """Everything reset."""
         return Liveness()
 
     def ineligible(self):
-        """Same restarts and next_restart_at, but silent_since, awake_since, next_probe_at = None."""
+        """Same restarts and next_restart_at, but silent_since, awake_since, next_probe_at, unreadable_since = None."""
         return dataclasses.replace(
             self,
             silent_since=None,
             awake_since=None,
             next_probe_at=None,
+            unreadable_since=None,
         )
 
     def silent(self, now):
@@ -71,6 +76,17 @@ class Liveness:
             self,
             awake_since=awake_since,
             next_probe_at=now + interval,
+            unreadable_since=None,
+        )
+
+    def unreadable(self, now):
+        """The probe got no reading: drop the awake clock (a stale reading proves
+        nothing), keep silent_since, start the no-reading clock, probe again next tick."""
+        return dataclasses.replace(
+            self,
+            awake_since=None,
+            next_probe_at=None,
+            unreadable_since=self.unreadable_since if self.unreadable_since is not None else now,
         )
 
     def restart_due(self, now):
@@ -87,6 +103,20 @@ class Liveness:
             return False
         return True
 
+    def unreadable_restart_due(self, now):
+        """True only if silent for the grace, with no headset reading for
+        UNREADABLE_GRACE, and the backoff has elapsed. The caller must also check
+        that adb still lists the headset: an unplugged one keeps waiting (#86)."""
+        if self.silent_since is None or self.unreadable_since is None:
+            return False
+        if now - self.silent_since < GRACE:
+            return False
+        if now - self.unreadable_since < UNREADABLE_GRACE:
+            return False
+        if self.next_restart_at is not None and now < self.next_restart_at:
+            return False
+        return True
+
     def restarted(self, now):
         """Record a restart and start a fresh observation cycle."""
         restarts = self.restarts + 1
@@ -97,4 +127,5 @@ class Liveness:
             awake_since=None,
             next_probe_at=now + AWAKE_PROBE_INTERVAL,
             next_restart_at=now + restart_backoff(restarts),
+            unreadable_since=None,
         )

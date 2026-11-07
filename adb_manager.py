@@ -13,6 +13,7 @@ import re
 from typing import Optional, Callable, Dict, List
 
 import am_result
+import heal_policy
 import qt_platform
 import vpn_state
 
@@ -186,6 +187,22 @@ class ADBManager:
             return None
         return quest.get("serial") or None
 
+    def device_listed(self, serial: str) -> Optional[bool]:
+        """Is `serial` in `adb devices -l` in any state (#65)?
+
+        True: listed, even as offline or unauthorized (those lines carry no model,
+        so find_quest() cannot see them). False: the list was read and the serial
+        is not in it (unplugged). None: the `adb devices` call failed or timed out,
+        which is a wedged adb server, not an unplugged headset. Never raises.
+        """
+        try:
+            result = self.run_adb("devices", "-l")
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        return any(d.get("serial") == serial for d in parse_devices(result.stdout))
+
     def get_device_details(self, serial: str) -> Dict[str, str]:
         """Get device model, battery, and VPN IP. Minimal ADB calls."""
         info = {}
@@ -251,6 +268,23 @@ class ADBManager:
             timeout=timeout,
         )
         return result.returncode == 0
+
+    def is_headset_awake(self, serial: str, timeout: float = 3.0) -> Optional[bool]:
+        """True if the headset screen is awake (`dumpsys power`), False if it is
+        asleep, None when unknown (#65). One ADB call with a short timeout.
+
+        Never raises. None means "no reading": the liveness policy then makes no
+        heal decision from it.
+        """
+        try:
+            result = self.run_adb(
+                "-s", serial, "shell", "dumpsys", "power", timeout=timeout
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        return heal_policy.parse_wakefulness(result.stdout)
 
     def stop_gnirehtet_client(self, serial: str, timeout: float = 10.0) -> bool:
         """Stop the gnirehtet VPN client on the device (wakes the headset first, #64)."""

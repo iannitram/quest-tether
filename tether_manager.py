@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from adb_manager import ADBManager
 import net_sync
 import qt_platform
+import heal_policy
 from heal import Heal, Healer
 
 logger = logging.getLogger(__name__)
@@ -94,14 +95,11 @@ class TetherManager:
     RELAY_LISTEN_TIMEOUT = 5.0
     RELAY_LISTEN_POLL = 0.025
 
-    # Self-healing: consecutive missed tun0 reads (with the relay alive) before
-    # each rung of the ladder, and the rate limit between heal actions.
-    TUN_MISSES_TO_HEAL = 3
-    HEAL_MIN_INTERVAL = 30.0
-    HEALS_BEFORE_FULL_RECONNECT = 3
-    # Flap breaker: this many heals/reconnects inside the window = stop looping.
-    FLAP_LIMIT = 6
-    FLAP_WINDOW = 600.0
+    # Self-healing (#65): with the relay alive and tun0 gone, the headset must be
+    # awake and silent for heal_policy.GRACE before a restart. Restarts back off
+    # 60 s doubling to 300 s. This many restarts with no tunnel in between end
+    # auto-recovery with ERROR (owner to confirm the number).
+    HEAL_FINAL_RESTARTS = 10
     # Wi-Fi sync: re-check the PC's network this often; give up on one PC
     # network after this many failed attempts (until the PC's network changes).
     WIFI_SYNC_INTERVAL = 30.0
@@ -131,13 +129,14 @@ class TetherManager:
         self._last_battery_time: float = 0.0
 
         # Health / self-heal state
+        # flap_max=None: the liveness backoff (#65) replaces the flap breaker.
         self._healer = Healer(
-            miss_limit=self.TUN_MISSES_TO_HEAL,
-            min_heal_gap=self.HEAL_MIN_INTERVAL,
-            flap_max=self.FLAP_LIMIT,
-            flap_window=self.FLAP_WINDOW,
+            flap_max=None,
             max_reconnects=self.MAX_RECONNECT_ATTEMPTS,
         )
+        self._liveness = heal_policy.Liveness()
+        self._liveness_lock = threading.Lock()
+        self._tun_up_since: Optional[float] = None
         # Headset Wi-Fi policy while tethered: 'off' | 'sync' | 'leave'
         self._wifi_mode = os.environ.get("QT_WIFI_MODE", "off")
         self._wifi_off_failed = (
@@ -513,6 +512,8 @@ class TetherManager:
         self._kill_stale_process()
 
         self._healer.reset()
+        self._set_liveness(heal_policy.Liveness())
+        self._tun_up_since = None
 
         if self.relay_mode == "split":
             self._log("Starting gnirehtet relay (split mode)...")
@@ -702,29 +703,14 @@ class TetherManager:
             try:
                 tun_ok = self._update_stats(serial)
 
-                # Rung 0: relay process died -> full reconnect
+                # Rung 0: relay process died -> back off, then full reconnect
                 if not self.is_relay_running():
-                    self._log("gnirehtet process died!")
-                    if self._auto_reconnect and self._running:
-                        if self._flapping("relay died"):
-                            return
-                        self._attempt_reconnect(serial)
-                    else:
-                        self._set_state(TetherState.ERROR, "Process died")
-                    continue
-
-                # Relay alive: is the tunnel actually there?
-                tunnel_state = _state_for_tunnel(tun_ok)
-                if self.stats.state != tunnel_state:
-                    self._set_state(tunnel_state)
-                if tun_ok or self._auto_reconnect:
-                    action = self._healer.observe(time.time(), True, tun_ok)
-                    if action is Heal.GIVE_UP:
-                        self._heal(serial, action)
-                        return
-                    if action is not Heal.NONE:
-                        if self._heal(serial, action):
-                            return  # flapping breaker tripped or full reconnect took over
+                    self._relay_died(serial)
+                else:
+                    # Relay alive: is the tunnel actually there?
+                    self._check_tunnel(serial, tun_ok, time.time())
+                if not self._running:
+                    return   # auto-recovery gave up: no Wi-Fi sync after the stop
 
                 # Keep the headset Wi-Fi policy applied (headset may re-enable Wi-Fi itself)
                 if (
@@ -740,45 +726,135 @@ class TetherManager:
 
     # --- Self-healing ---
 
-    def _note_recovery(self) -> int:
-        """Record a heal/reconnect event; return how many fell inside the flap window."""
-        return self._healer.note_recovery(time.time())
+    def _liveness_now(self) -> heal_policy.Liveness:
+        with self._liveness_lock:
+            return self._liveness
 
-    def _trip(self, reason: str):
-        self._log(
-            f"Connection is flapping ({self.FLAP_LIMIT}+ recoveries in "
-            f"{int(self.FLAP_WINDOW // 60)} min, last: {reason}) — stopping auto-recovery"
-        )
-        self._set_state(
-            TetherState.ERROR,
+    def _set_liveness(self, live: heal_policy.Liveness):
+        with self._liveness_lock:
+            self._liveness = live
+
+    def _check_tunnel(self, serial: str, tun_ok: bool, now: float):
+        """Relay alive: update the state and run the tunnel-missing branch (#65)."""
+        tunnel_state = _state_for_tunnel(tun_ok)
+        if self.stats.state != tunnel_state:
+            self._set_state(tunnel_state)
+        if tun_ok:
+            self._tunnel_seen(now)
+        elif self._auto_reconnect:
+            self._tunnel_missing(serial, now)
+
+    def _tunnel_seen(self, now: float):
+        """tun0 is up. The silence and awake clocks restart at once, so a later miss
+        has to earn its own grace. The restart count and backoff stay until tun0 has
+        stayed up for GRACE, so a relay that dies again right after a restart
+        still backs off (#65)."""
+        self._healer.observe(now, True, True)
+        self._set_liveness(self._liveness_now().ineligible())
+        if self._tun_up_since is None:
+            self._tun_up_since = now
+        if now - self._tun_up_since >= heal_policy.GRACE:
+            self._set_liveness(self._liveness_now().connected())
+
+    def _tunnel_missing(self, serial: str, now: float):
+        """tun0 is gone while the relay is up. Heal only while the headset is awake
+        and has been silent for the grace period, with the restart backoff (#65).
+        A sleeping headset causes no heal and no breaker trip."""
+        self._tun_up_since = None
+        live = self._liveness_now().silent(now)
+        if live.probe_due(now):
+            awake = self.adb.is_headset_awake(serial)
+            if awake is None:
+                # No reading: not proof of awake. Drop the stale awake clock so no
+                # awake restart rests on it; a bounded run of these is handled below.
+                live = live.unreadable(now)
+            else:
+                live = live.observed(awake, now)
+        self._set_liveness(live)
+
+        unreadable = False
+        if not live.restart_due(now):
+            if not live.unreadable_restart_due(now):
+                return
+            # Listed in adb in any state (offline, unauthorized) or `adb devices`
+            # itself failing (wedged adb server): heal it. Read and not in the list
+            # (unplugged): keep waiting, #86 owns that.
+            if self.adb.device_listed(serial) is False:
+                return
+            unreadable = True
+        if self._restart_cap_reached():
+            self._give_up_healing(self._keeps_dropping_text())
+            return
+        action = self._healer.escalate(now)
+        if action is Heal.GIVE_UP:
+            self._give_up_healing("Max reconnect attempts reached")
+            return
+        if unreadable and action is Heal.RESTART_CLIENT:
+            action = Heal.RESTART_ADB_THEN_CLIENT   # a wedged adb needs its server restarted first
+        try:
+            self._heal(serial, action)
+        finally:
+            # Even when the heal raises: the backoff and the cap must still advance.
+            self._note_restart(time.time())
+
+    def _relay_died(self, serial: str):
+        """The relay process exited: reconnect, waiting out the restart backoff."""
+        self._log("gnirehtet process died!")
+        self._tun_up_since = None
+        if not (self._auto_reconnect and self._running):
+            self._set_state(TetherState.ERROR, "Process died")
+            return
+        if self._restart_cap_reached():
+            self._give_up_healing(self._keeps_dropping_text())
+            return
+        self._set_state(TetherState.RECONNECTING)
+        self._wait_backoff()
+        if self._running:
+            try:
+                self._attempt_reconnect(serial)
+            finally:
+                # Even when the reconnect raises: the backoff and the cap must still advance.
+                self._note_restart(time.time())
+
+    def _restart_cap_reached(self) -> bool:
+        return self._liveness_now().restarts >= self.HEAL_FINAL_RESTARTS
+
+    def _note_restart(self, now: float):
+        with self._liveness_lock:
+            self._liveness = self._liveness.restarted(now)
+
+    def _wait_backoff(self):
+        """Sleep until the restart backoff allows the next relay restart. Steps of
+        at most 1 s, so a disconnect is not held up by a long sleep (#65)."""
+        while self._running:
+            due = self._liveness_now().next_restart_at
+            if due is None:
+                return
+            remaining = due - time.time()
+            if remaining <= 0:
+                return
+            time.sleep(min(1.0, remaining))
+
+    def _keeps_dropping_text(self) -> str:
+        return (
             "Tether keeps dropping — check the USB cable/port, that only one Quest Tether "
-            "is running, and " + os.path.join(self._data_dir, "relay.log"),
+            "is running, and " + os.path.join(self._data_dir, "relay.log")
         )
-        self._running = False
 
-    def _flapping(self, reason: str) -> bool:
-        """Trip the breaker if we've been recovering too often. Returns True if tripped."""
-        if self._note_recovery() > self.FLAP_LIMIT:
-            self._trip(reason)
-            return True
-        return False
+    def _give_up_healing(self, error: str):
+        """The one place auto-recovery stops for good."""
+        restarts = self._liveness_now().restarts
+        self._log(
+            f"Auto-recovery stopped after {restarts} restarts with no tunnel — "
+            "not retrying"
+        )
+        self._set_state(TetherState.ERROR, error)
+        self._running = False
 
     def _heal(self, serial: str, action: Heal) -> bool:
         """Relay is alive but tun0 keeps vanishing. Escalate gently:
         1. re-issue the client start   2. restart adb server + client
         3. full relay reconnect.  Returns True if the health loop should exit."""
-        if action is Heal.GIVE_UP:
-            if self._healer.trip_reason == "reconnects":
-                self._log("Client restarts didn't stick — full relay reconnect")
-                self._log(
-                    f"Max reconnect attempts ({self.MAX_RECONNECT_ATTEMPTS}) reached"
-                )
-                self._set_state(TetherState.ERROR, "Max reconnect attempts reached")
-                self._running = False
-            else:
-                self._trip("tun0 missing")
-            return True
-
         self._set_state(TetherState.RECONNECTING)
 
         # Is the headset even visible on USB?

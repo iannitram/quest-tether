@@ -7,6 +7,7 @@ work; this module only decides.
 
 from collections import deque
 from enum import Enum
+from typing import Optional
 
 
 MISS_LIMIT = 3
@@ -25,13 +26,18 @@ class Heal(Enum):
 
 
 class Healer:
-    """Count tunnel misses, climb the heal ladder, and trip the breakers."""
+    """Count tunnel misses, climb the heal ladder, and trip the breakers.
+
+    ``flap_max=None`` turns the flap breaker off: the awake-gated liveness
+    policy (#65) decides when a restart is due and backs off instead of
+    giving up. The reconnect cap stays on either way.
+    """
 
     def __init__(
         self,
         miss_limit: int = MISS_LIMIT,
         min_heal_gap: float = MIN_HEAL_GAP_SECS,
-        flap_max: int = FLAP_MAX,
+        flap_max: Optional[int] = FLAP_MAX,
         flap_window: float = FLAP_WINDOW_SECS,
         max_reconnects: int = MAX_RECONNECTS,
     ):
@@ -78,6 +84,17 @@ class Healer:
         if self._last_heal is not None and now - self._last_heal < self.min_heal_gap:
             return Heal.NONE
 
+        return self.escalate(now)
+
+    def escalate(self, now: float) -> Heal:
+        """Take the next ladder step now, without the miss and spacing checks.
+
+        The caller has already decided a restart is due (#65). Returns GIVE_UP
+        once the reconnect cap or a tripped breaker says stop.
+        """
+        if self._tripped:
+            return Heal.GIVE_UP
+
         heal = self._next_heal()
         self.note_recovery(now)
         if self._tripped:
@@ -97,10 +114,15 @@ class Healer:
 
     def note_recovery(self, now: float) -> int:
         """Record a recovery made outside the ladder (for example a reconnect
-        after the relay died); return how many are inside the flap window."""
+        after the relay died); return how many are inside the flap window.
+        Trips the flap breaker only when ``flap_max`` is set."""
         self._prune(now)
         self._heals.append(now)
-        if len(self._heals) > self.flap_max and not self._tripped:
+        if (
+            self.flap_max is not None
+            and len(self._heals) > self.flap_max
+            and not self._tripped
+        ):
             self._tripped = True
             self._trip_reason = "flap"
         return len(self._heals)
