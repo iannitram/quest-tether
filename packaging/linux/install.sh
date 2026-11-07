@@ -7,7 +7,7 @@ BIN="$HOME/.local/bin"
 UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/quest-tether.service"
 
 mkdir -p "$PREFIX" "$(dirname "$UNIT")"
-cp -r "$PKG/quest-tether" "$PKG/qtetherd" "$PKG/quest-tether-decky.zip" "$PKG/tools" "$PREFIX/"
+cp -r "$PKG/quest-tether" "$PKG/qtetherd" "$PKG/tools" "$PREFIX/"
 chmod +x "$PREFIX/quest-tether" "$PREFIX/qtetherd"
 
 # quest-tether is the command line (cli.py); its `gui` subcommand opens the window.
@@ -39,3 +39,13 @@ systemctl --user enable --now quest-tether.service
 
 echo "Quest Tether needs one administrator step: the USB rule that lets the headset work without root."
 sudo sh -c 'cp "$1" /etc/udev/rules.d/51-quest-tether.rules && udevadm control --reload-rules && udevadm trigger' sh "$PKG/51-quest-tether.rules"
+
+# The Decky panel is a zip that Decky loads. The package does not put it into Decky's own
+# folder (that needs a second sudo prompt), so the player installs it from Decky's settings.
+if [ -f "$PKG/quest-tether-decky.zip" ]; then
+  cp "$PKG/quest-tether-decky.zip" "$PREFIX/"
+  echo "Decky panel: the plugin zip is at $PREFIX/quest-tether-decky.zip."
+  echo "To load it, install that zip from Decky's developer settings. Quest Tether does not do it for you."
+else
+  echo "This package has no Decky zip (pnpm was missing when it was built), so it has no Decky panel."
+fi

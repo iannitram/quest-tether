@@ -84,6 +84,22 @@ class Scripts(unittest.TestCase):
         self.assertIn("rm -f /etc/udev/rules.d/51-quest-tether.rules", sudo[0])
         self.assertIn("udevadm control --reload-rules", sudo[0])
 
+    def test_install_says_where_the_decky_zip_is_and_does_not_load_it(self):
+        out = self.run_script("install.sh")
+        zip_path = os.path.join(self.prefix, "quest-tether-decky.zip")
+        self.assertTrue(os.path.isfile(zip_path))
+        self.assertIn(zip_path, out)
+        self.assertIn("Decky's developer settings", out)
+        self.assertEqual([c for c in self.calls() if "decky" in c.lower()], [])
+
+    def test_install_without_the_decky_zip_still_succeeds_and_says_so(self):
+        os.remove(os.path.join(self.pkg, "quest-tether-decky.zip"))
+        out = self.run_script("install.sh")
+        self.assertFalse(os.path.exists(os.path.join(self.prefix, "quest-tether-decky.zip")))
+        self.assertIn("no Decky zip", out)
+        self.assertTrue(os.path.islink(self.link))
+        self.assertEqual(len([c for c in self.calls() if c.startswith("sudo")]), 1)
+
     def test_uninstall_on_a_machine_without_the_package_still_succeeds(self):
         self.run_script("uninstall.sh")
 
