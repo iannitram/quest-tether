@@ -371,12 +371,17 @@ def _read_meminfo():
 
 def _cmd_sample(args) -> int:
     with open(args.out, "w", encoding="utf-8") as out:
-        written = run_sampler(
-            args.minutes, args.interval, out,
-            fetch_status=_fetch_status,
-            list_processes=_list_processes,
-            read_meminfo=_read_meminfo,
-        )
+        try:
+            written = run_sampler(
+                args.minutes, args.interval, out,
+                fetch_status=_fetch_status,
+                list_processes=_list_processes,
+                read_meminfo=_read_meminfo,
+            )
+        except KeyboardInterrupt:
+            # Each sample is flushed as it is written, so the file keeps every sample taken so far.
+            print(f"Stopped early; the samples taken so far are in {args.out}", file=sys.stderr)
+            return 130
     print(f"Wrote {written} samples to {args.out}")
     return 0
 

@@ -371,7 +371,9 @@ class FetchStatus(unittest.TestCase):
 
 
 class ListProcesses(unittest.TestCase):
-    @unittest.skipUnless(shutil.which("ps"), "needs ps")
+    # ps on Windows (Git Bash) reports Cygwin-style pids, so os.getpid() never matches.
+    # The Windows process lister waits for the Windows work (#3).
+    @unittest.skipUnless(os.name == "posix" and shutil.which("ps"), "needs ps on Linux or macOS")
     def test_sees_this_process(self):
         rows = soak_report._list_processes()
         self.assertTrue(any(r["pid"] == os.getpid() for r in rows))
@@ -436,6 +438,33 @@ class MainCommands(unittest.TestCase):
         self.assertGreaterEqual(len(records), 2)
         self.assertEqual(records[0]["state"], "idle")
         self.assertIn("Wrote", out.getvalue())
+
+    def test_ctrl_c_keeps_samples_taken_so_far(self):
+        real_fetch, real_list, real_mem = soak_report._fetch_status, soak_report._list_processes, soak_report._read_meminfo
+        calls = []
+
+        def fetch():
+            calls.append(1)
+            if len(calls) > 1:
+                raise KeyboardInterrupt
+            return {"state": "idle", "rx_bps": 0.0}
+
+        soak_report._fetch_status = fetch
+        soak_report._list_processes = lambda: []
+        soak_report._read_meminfo = lambda: MEMINFO
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                target = os.path.join(tmp, "out.jsonl")
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    code = soak_report.main(["sample", "--minutes", "0.001", "--interval", "0.05", "--out", target])
+                with open(target, encoding="utf-8") as handle:
+                    records = soak_report.read_records(handle.read())
+        finally:
+            soak_report._fetch_status, soak_report._list_processes, soak_report._read_meminfo = real_fetch, real_list, real_mem
+        self.assertEqual(code, 130)
+        self.assertEqual(len(records), 1)
+        self.assertIn("Stopped early", err.getvalue())
 
 
 if __name__ == "__main__":
