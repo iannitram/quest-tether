@@ -152,6 +152,8 @@ class FakeAdb:
         self.reachable = reachable
         self.vpn_down = vpn_down
         self.stop_raises = None
+        self.stop_result = True
+        self.on_stop = None
         self.toggle_raises = None
         self.stop_timeouts = []
         self.force_stop_at = None
@@ -163,9 +165,11 @@ class FakeAdb:
     def stop_gnirehtet_client(self, serial, timeout=10.0):
         self.calls.append("stop")
         self.stop_timeouts.append(timeout)
+        if self.on_stop:
+            self.on_stop()
         if self.stop_raises:
             raise self.stop_raises
-        return True
+        return self.stop_result
 
     def is_vpn_down(self, serial):
         self.calls.append("is_vpn_down")
@@ -330,6 +334,33 @@ class DisconnectTests(unittest.TestCase):
             manager.force_kill()
 
         self.assertIn("kill_tree", self.calls)
+
+    def test_force_kill_survives_the_process_being_cleared_during_the_stop(self):
+        manager = self.make_manager()
+        manager.platform.kill_tree.side_effect = lambda pid: self.calls.append(f"kill_tree:{pid}")
+        manager.adb.on_stop = lambda: setattr(manager, "_process", None)
+
+        with patch("tether_manager.time.sleep"):
+            manager.force_kill()  # must not raise
+
+        self.assertIn("kill_tree:123", self.calls)
+
+    def test_a_refused_stop_intent_is_logged_and_disconnect_goes_on(self):
+        manager = self.make_manager()
+        manager.adb.stop_result = False
+
+        manager.disconnect()
+
+        self.assertTrue(any("refused the STOP" in line for line in self.logs))
+        self.assertIn("terminate", self.calls)
+
+    def test_the_last_poll_sleep_is_clamped_to_the_deadline(self):
+        manager = self.make_manager(vpn_down=False)
+
+        self.assertFalse(manager._wait_vpn_closed("quest", deadline=0.75))
+
+        self.assertEqual(self.clock.sleeps, [0.5, 0.25])
+        self.assertAlmostEqual(self.clock.now, 0.75)
 
     def test_force_kill_without_a_serial_sends_no_stop(self):
         manager = self.make_manager()

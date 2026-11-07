@@ -99,6 +99,15 @@ class AmStartClient(unittest.TestCase):
         start = next(i for i, a in enumerate(argvs) if "com.genymobile.gnirehtet.START" in a)
         self.assertLess(wake, start)
 
+    def test_start_wakes_the_headset_before_the_reverse_mapping(self):
+        manager = self.make_manager()
+        with patch.object(manager, "run_adb", return_value=self.result()) as run:
+            manager.start_gnirehtet_client("quest-serial")
+        argvs = [c.args for c in run.call_args_list]
+        wake = argvs.index(("-s", "quest-serial", "shell", "input", "keyevent", "224"))
+        reverse = next(i for i, a in enumerate(argvs) if "reverse" in a)
+        self.assertLess(wake, reverse)
+
     def test_stop_wakes_the_headset_before_the_stop_intent(self):
         manager = self.make_manager()
         with patch.object(manager, "run_adb", return_value=self.result()) as run:

@@ -314,7 +314,8 @@ class TetherManager:
         goes to the headset first, with each adb call capped, so the VPN does
         not outlive the relay. Total wait stays around 4 s at most.
         """
-        if not self._process:
+        proc = self._process
+        if not proc:
             return
         serial = self.stats.device_serial
         if serial:
@@ -324,10 +325,11 @@ class TetherManager:
                 )
             except Exception:
                 pass
-        pid = self._process.pid
+        # Another thread may clear self._process during the STOP; use our copy.
+        pid = proc.pid
         try:
             self.platform.kill_tree(pid)
-            self._process.wait(timeout=5)
+            proc.wait(timeout=5)
         except Exception:
             pass
         self._process = None
@@ -472,7 +474,8 @@ class TetherManager:
             return
 
         self._log("Telling Quest to drop VPN...")
-        self.adb.stop_gnirehtet_client(serial)  # wakes the headset first
+        if not self.adb.stop_gnirehtet_client(serial):  # wakes the headset first
+            self._log("Headset refused the STOP intent — waiting to see if the VPN closes")
 
         if self._wait_vpn_closed(serial):
             self._log("VPN interface down")
@@ -517,7 +520,7 @@ class TetherManager:
                 return True
             if time.monotonic() >= limit:
                 return False
-            time.sleep(self.VPN_CLOSE_POLL)
+            time.sleep(min(self.VPN_CLOSE_POLL, max(0.0, limit - time.monotonic())))
 
     # --- Health Monitoring ---
 

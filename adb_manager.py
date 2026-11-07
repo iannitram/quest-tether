@@ -277,8 +277,8 @@ class ADBManager:
         Safe to call while the relay is running. `gnirehtet run` only tries this
         once at launch, so a missed attempt leaves the relay up with no tunnel.
         """
-        self.run_adb("-s", serial, "reverse", "localabstract:gnirehtet", f"tcp:{port}")
         self.wake_headset(serial)
+        self.run_adb("-s", serial, "reverse", "localabstract:gnirehtet", f"tcp:{port}")
         result = self.run_adb(
             "-s",
             serial,
