@@ -432,7 +432,8 @@ class TetherManager:
         """Poll until the relay listens on port. False if it dies first or the deadline passes."""
         deadline = time.monotonic() + self.RELAY_LISTEN_TIMEOUT
         while True:
-            if self._process is None or self._process.poll() is not None:
+            proc = self._process
+            if proc is None or proc.poll() is not None:
                 return False
             if self._port_open(port):
                 return True
@@ -633,7 +634,8 @@ class TetherManager:
 
     def is_relay_running(self) -> bool:
         """Check if the gnirehtet process is alive."""
-        return self._process is not None and self._process.poll() is None
+        proc = self._process
+        return proc is not None and proc.poll() is None
 
     def note_usb_event(self, message: str):
         """Log a USB event the service saw (#86). Changes no state."""
