@@ -35,7 +35,10 @@ class FakeClock:
 class LivenessHarness(unittest.TestCase):
     def setUp(self):
         self.clock = FakeClock()
+        # monotonic too: the VPN-close wait sleeps to a monotonic deadline, and a
+        # real remainder fed to the fake sleep made the clock drift (CI flake).
         for target, fake in (("tether_manager.time.time", self.clock.time),
+                             ("tether_manager.time.monotonic", self.clock.time),
                              ("tether_manager.time.sleep", self.clock.sleep)):
             patcher = patch(target, fake)
             patcher.start()
