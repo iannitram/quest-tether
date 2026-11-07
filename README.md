@@ -38,7 +38,7 @@ tether in-process.
 
 - Read tools run at once: `status`, `doctor`, `logs`, `crash_queue`, `settings_get`, `service_status`.
 - Write tools change the tether or the headset: `connect`, `disconnect`, `wifi_sync`, `install_apk`, `crash_queue_flush`, `settings_set`, `service`. Each one refuses unless the call passes `confirm: true`.
-- Without the service, a `connect` lasts only as long as the MCP server runs, because the tether lives in that process.
+- Without the service, a `connect` lasts only as long as the MCP server runs, because the tether lives in that process. The server brings it down when it exits (stdin closed or a stop signal).
 
 On Linux, `packaging/linux/install.sh` registers the server with Claude Code for your user when `claude` is on PATH, using the full path to the installed `quest-tether`. Check it with `claude mcp list`. `uninstall.sh` removes the registration. Without `claude`, install skips this step quietly.
 

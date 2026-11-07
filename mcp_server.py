@@ -15,6 +15,7 @@ each one refuses unless the caller passes "confirm": true.
 
 import contextlib
 import json
+import signal
 import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -22,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import cli_commands
 import cli_format
 import crash_report
+from tether_manager import ACTIVE_CONNECT_STATES, TetherState
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "quest-tether"
@@ -40,6 +42,7 @@ INTERNAL_ERROR = -32603
 
 SETTING_KEYS = ["auto_reconnect", "wifi_mode", "crash_reports", "autostart"]
 SERVICE_ACTIONS = ["start", "stop"]
+LIVE_STATES = ACTIVE_CONNECT_STATES + (TetherState.RECONNECTING,)
 DEFAULT_LOG_LINES = 50
 MAX_LOG_LINES = 1000
 
@@ -415,6 +418,50 @@ class _KeepInProcess:
             self._local = backend
         return self._local
 
+    def close(self) -> None:
+        """Bring down a tether this process started, so no relay outlives the server.
+
+        Only an in-process tether that is still live is touched: a relay that
+        another process or the service owns is none of this server's business.
+        """
+        local, self._local = self._local, None
+        tether = getattr(local, "_tether", None)
+        if tether is None:
+            return
+        try:
+            state = getattr(getattr(tether, "stats", None), "state", None)
+            live = tether.is_relay_running() or state in LIVE_STATES
+            if live:
+                local.disconnect()
+        except Exception:
+            pass
+
+
+def _stop_on_signal(signum, frame):
+    raise SystemExit(0)
+
+
+def _install_signal_handlers() -> Callable[[], None]:
+    """Turn SIGTERM, SIGHUP and SIGINT into a clean exit; return the undo."""
+    saved = []
+    for name in ("SIGTERM", "SIGHUP", "SIGINT"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            saved.append((number, signal.signal(number, _stop_on_signal)))
+        except (ValueError, OSError):
+            pass  # not the main thread: the caller owns the signals
+
+    def restore():
+        for number, handler in saved:
+            try:
+                signal.signal(number, handler)
+            except (ValueError, OSError, TypeError):
+                pass
+
+    return restore
+
 
 def _line_reply(line: str, backend_factory) -> Optional[dict]:
     try:
@@ -427,17 +474,30 @@ def _line_reply(line: str, backend_factory) -> Optional[dict]:
 
 
 def serve(stdin=None, stdout=None, backend_factory=None) -> int:
-    """Read JSON-RPC lines from stdin and answer on stdout until stdin closes."""
+    """Read JSON-RPC lines from stdin and answer on stdout until stdin closes.
+
+    On the way out (stdin closed, SIGTERM, SIGHUP, Ctrl+C or a closed stdout) a
+    tether this process started in-process is brought down, so the relay does
+    not outlive the server.
+    """
     source = stdin if stdin is not None else sys.stdin
     sink = stdout if stdout is not None else sys.stdout
     picker = _KeepInProcess(backend_factory or cli_commands.make_backend)
-    with contextlib.redirect_stdout(sys.stderr):
-        for raw in source:
-            line = raw.strip()
-            if not line:
-                continue
-            reply = _line_reply(line, picker)
-            if reply is not None:
-                sink.write(json.dumps(reply, default=str) + "\n")
-                sink.flush()
+    restore = _install_signal_handlers() if stdin is None else (lambda: None)
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            for raw in source:
+                line = raw.strip()
+                if not line:
+                    continue
+                reply = _line_reply(line, picker)
+                if reply is not None:
+                    try:
+                        sink.write(json.dumps(reply, default=str) + "\n")
+                        sink.flush()
+                    except (BrokenPipeError, ValueError):
+                        break  # the client is gone
+    finally:
+        restore()
+        picker.close()
     return 0

@@ -549,5 +549,97 @@ class Dispatch(unittest.TestCase):
         self.assertEqual([len(b.calls) for b in handed_out], [1, 1])
 
 
+class LiveTether(FakeTether):
+    """A tether whose relay is running."""
+
+    def is_relay_running(self):
+        return True
+
+
+class ShutdownTests(unittest.TestCase):
+    """No relay may outlive the server (stdin closed, signal, closed stdout)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def local_backend(self, live):
+        backend = FakeBackend(self.tmp.name, mode="in-process")
+        backend._tether = LiveTether() if live else FakeTether()
+        return backend
+
+    def test_stdin_closing_disconnects_a_live_in_process_tether(self):
+        backend = self.local_backend(live=True)
+        run([tool_call("connect", {"confirm": True})], lambda: backend)
+        self.assertEqual([c[0] for c in backend.calls], ["connect", "disconnect"])
+
+    def test_a_tether_that_is_not_running_is_left_alone(self):
+        backend = self.local_backend(live=False)
+        run([tool_call("connect", {"confirm": True})], lambda: backend)
+        self.assertEqual([c[0] for c in backend.calls], ["connect"])
+
+    def test_a_service_backend_is_never_disconnected_on_exit(self):
+        backend = FakeBackend(self.tmp.name, mode="service")
+        backend._tether = LiveTether()
+        run([tool_call("status")], lambda: backend)
+        self.assertEqual([c[0] for c in backend.calls], ["status"])
+
+    def test_nothing_connected_means_no_disconnect(self):
+        backend = self.local_backend(live=True)
+        run([request("ping")], lambda: backend)
+        self.assertEqual(backend.calls, [])
+
+    def test_a_failing_disconnect_on_exit_does_not_raise(self):
+        backend = self.local_backend(live=True)
+        backend.replies["disconnect"] = RuntimeError("adb gone")
+        code, _, _ = run([tool_call("connect", {"confirm": True})], lambda: backend)
+        self.assertEqual(code, 0)
+
+    def test_a_closed_stdout_ends_the_loop_and_still_cleans_up(self):
+        class Closed:
+            def write(self, text):
+                raise BrokenPipeError()
+
+            def flush(self):
+                pass
+
+        backend = self.local_backend(live=True)
+        lines = [tool_call("connect", {"confirm": True}, 1), request("ping", None, 2)]
+        with redirect_stderr(io.StringIO()):
+            code = mcp_server.serve(
+                stdin=io.StringIO("\n".join(lines) + "\n"),
+                stdout=Closed(),
+                backend_factory=lambda: backend,
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual([c[0] for c in backend.calls], ["connect", "disconnect"])
+
+    def test_a_signal_while_serving_cleans_up(self):
+        backend = self.local_backend(live=True)
+
+        class Lines:
+            def __iter__(self):
+                yield tool_call("connect", {"confirm": True})
+                mcp_server._stop_on_signal(15, None)
+
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            mcp_server.serve(stdin=Lines(), stdout=io.StringIO(), backend_factory=lambda: backend)
+        self.assertEqual([c[0] for c in backend.calls], ["connect", "disconnect"])
+
+    def test_signal_handlers_are_installed_and_restored(self):
+        installed = {}
+
+        def fake_signal(number, handler):
+            previous = installed.get(number, "old-%s" % number)
+            installed[number] = handler
+            return previous
+
+        with patch.object(mcp_server.signal, "signal", fake_signal):
+            restore = mcp_server._install_signal_handlers()
+            self.assertIs(installed[mcp_server.signal.SIGTERM], mcp_server._stop_on_signal)
+            restore()
+        self.assertEqual(installed[mcp_server.signal.SIGTERM], "old-%s" % int(mcp_server.signal.SIGTERM))
+
+
 if __name__ == "__main__":
     unittest.main()
