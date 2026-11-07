@@ -84,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
         _add_json(action_parser)
 
     gui = sub.add_parser("gui", help="start the desktop window")
+    gui.add_argument("--minimized", action="store_true", help="start hidden in the tray")
     _add_json(gui)
 
     sub.add_parser(
