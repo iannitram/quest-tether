@@ -41,6 +41,11 @@ def _run(args: List[str], timeout: float = 8) -> str:
     return done.stdout if done.returncode == 0 else ""
 
 
+# `systemctl stop` waits for the unit's SIGTERM stop, which runs the disconnect
+# (up to 20 s) and may take the unit's TimeoutStopSec (30 s) (#110).
+SERVICE_STOP_TIMEOUT = 40
+
+
 def _systemctl(*args: str, timeout: float = 15) -> subprocess.CompletedProcess:
     """Run one systemctl --user command; a missing systemctl becomes a failed run."""
     cmd = ["systemctl", "--user"] + list(args)
@@ -220,7 +225,10 @@ class LinuxPlatform(Platform):
         if action not in ("status", "start", "stop"):
             return {"ok": False, "error": "bad service action: " + str(action)}
         if action in ("start", "stop"):
-            result = _systemctl(action, SERVICE_UNIT)
+            if action == "stop":
+                result = _systemctl(action, SERVICE_UNIT, timeout=SERVICE_STOP_TIMEOUT)
+            else:
+                result = _systemctl(action, SERVICE_UNIT)
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout or "").strip()
                 return {

@@ -36,6 +36,10 @@ MAX_LOG_LINES = 1000
 # Longest a SIGTERM stop may run the normal disconnect (#110). The unit's
 # TimeoutStopSec is a little longer, so systemd never kills us mid-stop.
 STOP_CAP_SECONDS = 20.0
+# How long the stop waits for the shared lock before disconnecting without it
+# (#110). A running connect holds the lock for up to about 30 s, and the stop
+# must not sit behind it.
+STOP_LOCK_WAIT_SECONDS = 2.0
 
 log = logging.getLogger(__name__)
 
@@ -314,20 +318,28 @@ def stop_tether(
     """Run the normal disconnect (stop intent, Wi-Fi restore) within cap seconds (#110).
 
     The disconnect runs on a daemon thread, so a stuck adb call cannot hold the
-    service past the cap. It takes the same lock as the request handlers. If the
-    lock is held longer than the cap, the disconnect never starts and the
-    service exits anyway. Returns True when the disconnect finished in time.
+    service past the cap. It waits at most STOP_LOCK_WAIT_SECONDS for the same
+    lock the request handlers take. If a connect still holds it, the disconnect
+    runs without the lock: the process is exiting, and disconnect() clears the
+    running flag so the connect stops at its next check. The lock is only
+    released when the stop took it. Returns True when the disconnect finished in
+    time.
     """
     lock = lock or _TETHER_LOCK
     done = threading.Event()
 
     def work() -> None:
+        got_lock = False
         try:
-            with lock:
-                tether.disconnect(headset_present=find_serial() is not None)
+            got_lock = lock.acquire(timeout=STOP_LOCK_WAIT_SECONDS)
+            if not got_lock:
+                log.warning("stop: another request holds the lock; disconnecting anyway")
+            tether.disconnect(headset_present=find_serial() is not None)
         except Exception:
             log.exception("disconnect on stop failed")
         finally:
+            if got_lock:
+                lock.release()
             done.set()
 
     threading.Thread(target=work, name="qtetherd-stop", daemon=True).start()
