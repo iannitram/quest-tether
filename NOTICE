@@ -1,6 +1,26 @@
 Quest Tether
 
-This product includes a pattern derived from gnirehtet-gui, licensed under
-the Apache License, Version 2.0:
+This product includes patterns derived from gnirehtet-gui
+(https://github.com/sawongam/gnirehtet-gui), licensed under the Apache
+License, Version 2.0:
 
-- Detection of `Error:` output from `adb shell am start` client intents.
+- Detection of `Error:` output from `adb shell am start` client intents
+  (adb_manager.py, am_result.py; #63).
+- Parsing of the relay's "Client #N connected/disconnected" lines
+  (relay_log.py; #62).
+
+gnirehtet-gui's own NOTICE reads, in the part that applies:
+
+  gnirehtet-gui
+  Copyright (c) Sangam Adhikari and contributors
+
+  This product includes components derived from Genymobile gnirehtet
+  (https://github.com/Genymobile/gnirehtet), Copyright (C) Genymobile,
+  licensed under the Apache License, Version 2.0.
+
+This product includes a policy re-implemented from quest-vd-wired
+(https://github.com/kkoemets/quest-vd-wired), licensed under the Apache
+License, Version 2.0:
+
+- The awake-gated headset liveness policy with restart backoff
+  (heal_policy.py; #65).
