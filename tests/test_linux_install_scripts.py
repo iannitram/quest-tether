@@ -35,6 +35,8 @@ class Scripts(unittest.TestCase):
             os.chmod(p, 0o755)
         self.prefix = os.path.join(self.home, ".local/share/quest-tether")
         self.unit = os.path.join(self.home, ".config/systemd/user/quest-tether.service")
+        self.bin = os.path.join(self.home, ".local/bin")
+        self.link = os.path.join(self.bin, "quest-tether")
 
     def run_script(self, name):
         env = {"HOME": self.home, "PATH": self.fakebin + ":/usr/bin:/bin", "QT_LOG": self.log, "QT_PKG": self.pkg}
@@ -84,6 +86,45 @@ class Scripts(unittest.TestCase):
 
     def test_uninstall_on_a_machine_without_the_package_still_succeeds(self):
         self.run_script("uninstall.sh")
+
+    def test_install_links_the_command_into_local_bin(self):
+        self.run_script("install.sh")
+        self.assertTrue(os.path.islink(self.link))
+        self.assertEqual(os.readlink(self.link), os.path.join(self.prefix, "quest-tether"))
+
+    def test_install_points_at_path_when_local_bin_is_not_on_it(self):
+        out = self.run_script("install.sh")
+        self.assertIn("PATH", out)
+
+    def test_install_leaves_a_file_of_that_name_in_local_bin_alone(self):
+        os.makedirs(self.bin)
+        with open(self.link, "w") as f:
+            f.write("someone else's tool")
+        out = self.run_script("install.sh")
+        self.assertFalse(os.path.islink(self.link))
+        with open(self.link) as f:
+            self.assertEqual(f.read(), "someone else's tool")
+        self.assertIn("already there", out)
+
+    def test_uninstall_removes_the_command_link(self):
+        self.run_script("install.sh")
+        self.run_script("uninstall.sh")
+        self.assertFalse(os.path.lexists(self.link))
+
+    def test_uninstall_leaves_a_file_of_that_name_alone(self):
+        os.makedirs(self.bin)
+        with open(self.link, "w") as f:
+            f.write("someone else's tool")
+        self.run_script("uninstall.sh")
+        with open(self.link) as f:
+            self.assertEqual(f.read(), "someone else's tool")
+
+    def test_uninstall_leaves_a_link_to_somewhere_else_alone(self):
+        os.makedirs(self.bin)
+        other = os.path.join(self.tmp, "elsewhere")
+        os.symlink(other, self.link)
+        self.run_script("uninstall.sh")
+        self.assertEqual(os.readlink(self.link), other)
 
 
 if __name__ == "__main__":
