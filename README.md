@@ -6,7 +6,7 @@ This repo holds the code and the project notes (setup guide, bug log, phase plan
 
 The branch `backup/other-copy-2026-10-20` keeps the older copy of three files (`adb_manager.py`, `main.py`, `tether_manager.py`) that differed between the two places the code lived. `main` has the newer version of each.
 
-No tool binaries (adb, the relay, the headset APK) are stored in the repo. `tools/README.md` lists each one per OS and where to download it; put them in `tools/` before running or building. Linux setup (udev rule, service): `docs/linux.md`. Code map and roadmap: `docs/code-map.md`.
+No tool binaries (adb, the relay, the headset APK) are stored in the repo. `tools/README.md` lists each one per OS and where to download it; put them in `tools/` before running or building. Linux setup: the udev rule is in `docs/linux.md`; `packaging/linux/install.sh` installs the `qtetherd` user service (`quest-tether.service`). Code map and roadmap: `docs/code-map.md`.
 
 ## Command line
 
