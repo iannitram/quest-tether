@@ -103,9 +103,11 @@ class Serve(unittest.TestCase):
         callbacks = adb.start_monitoring.call_args.kwargs
         tether.stats.state = TetherState.IDLE
         callbacks["on_connected"]({"serial": "HEADSET", "status": "device"})
+        callbacks["on_connected"].drain()
         tether.connect.assert_called_once_with("HEADSET")
         tether.stats.state = TetherState.CONNECTED
         callbacks["on_disconnected"]()
+        callbacks["on_disconnected"].drain()
         tether.disconnect.assert_not_called()
 
     def test_auto_reconnect_off_still_starts_monitoring_but_the_callbacks_do_nothing(self):
@@ -116,9 +118,11 @@ class Serve(unittest.TestCase):
         callbacks = adb.start_monitoring.call_args.kwargs
         tether.stats.state = TetherState.IDLE
         callbacks["on_connected"]({"serial": "HEADSET", "status": "device"})
+        callbacks["on_connected"].drain()
         tether.connect.assert_not_called()
         tether.is_relay_running.return_value = True
         callbacks["on_disconnected"]()
+        callbacks["on_disconnected"].drain()
         tether.disconnect.assert_not_called()
 
     def test_monitor_callback_starts_no_second_relay_while_connected(self):
@@ -129,6 +133,7 @@ class Serve(unittest.TestCase):
         on_connected, _ = qtetherd._monitor_callbacks(tether)
 
         on_connected({"serial": "HEADSET", "status": "device"})
+        on_connected.drain()
 
         tether._spawn_relay.assert_not_called()
         tether._kill_stale_process.assert_not_called()
@@ -152,6 +157,7 @@ class Serve(unittest.TestCase):
         on_connected, _ = qtetherd._monitor_callbacks(tether)
 
         on_connected({"serial": "HEADSET", "status": "device"})
+        on_connected.drain()
 
         tether._spawn_relay.assert_not_called()
         tether._kill_stale_process.assert_not_called()
@@ -166,6 +172,7 @@ class Serve(unittest.TestCase):
         _, on_disconnected = qtetherd._monitor_callbacks(tether)
 
         on_disconnected()
+        on_disconnected.drain()
 
         self.assertEqual(adb.mock_calls, [], "no headset-side call on unplug")
         tether._kill_process.assert_not_called()
@@ -180,6 +187,7 @@ class Serve(unittest.TestCase):
         _, on_disconnected = qtetherd._monitor_callbacks(tether)
 
         on_disconnected()
+        on_disconnected.drain()
 
         self.assertEqual(adb.mock_calls, [])
         tether._kill_process.assert_called_once_with()
@@ -192,6 +200,7 @@ class Serve(unittest.TestCase):
         _, on_disconnected = qtetherd._monitor_callbacks(tether)
 
         on_disconnected()
+        on_disconnected.drain()
 
         self.assertEqual(adb.mock_calls, [])
         tether._kill_process.assert_not_called()

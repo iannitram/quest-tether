@@ -822,6 +822,17 @@ class TetherManager:
             return True
         return self._abort_if_stopped()
 
+    def request_stop(self):
+        """Signal a stop without waiting for anything (#126).
+
+        Clears the running flag and bumps the session generation, the same two
+        signals disconnect() and SIGTERM use, so a connect() in flight returns at
+        its next #115 check and releases the caller's lock. It changes no other
+        state and kills nothing: disconnect() still does the cleanup.
+        """
+        self._running = False
+        self._session_gen += 1
+
     def disconnect(self, headset_present: bool = True):
         """Graceful shutdown, VPN first (#64; the order is from quest-vd-wired).
 

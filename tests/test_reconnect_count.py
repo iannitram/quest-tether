@@ -99,6 +99,7 @@ class ReconnectCount(unittest.TestCase):
         on_connected, on_disconnected = qtetherd._monitor_callbacks(manager)
 
         on_disconnected()  # unplug: the health loop owns the recovery
+        on_disconnected.drain()
 
         polls = []
 
@@ -109,6 +110,7 @@ class ReconnectCount(unittest.TestCase):
             if len(polls) == 2:
                 # the cable goes back in while the wait loop polls
                 on_connected({"serial": "S", "status": "device"})
+                on_connected.drain()
             return {"serial": "S", "status": "device"}
 
         adb.find_quest.side_effect = find_quest
