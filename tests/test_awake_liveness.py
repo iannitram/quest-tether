@@ -49,6 +49,11 @@ class LivenessHarness(unittest.TestCase):
         # manager (its `which java` lookup) first, and stub the port check (`ss`).
         self.manager.platform = Mock(wraps=self.manager.platform)
         self.manager.platform.port_holders.return_value = []
+        # Tests must never find or kill a real relay (#138): a live gnirehtet
+        # relay on the developer's machine would otherwise be SIGKILLed by
+        # connect()'s stale-process sweep. Stub the sweep and the kill.
+        self.manager.platform.stale_relay_pids.return_value = []
+        self.manager.platform.kill = Mock()
         # monotonic too: the VPN-close wait sleeps to a monotonic deadline, and a
         # real remainder fed to the fake sleep made the clock drift (CI flake).
         for target, fake in (("tether_manager.time.time", self.clock.time),
