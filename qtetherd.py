@@ -123,15 +123,19 @@ def _settings_path() -> Optional[str]:
         return None
 
 
-def _persist(tether, path: Optional[str] = None) -> bool:
-    """Save the effective persisted settings (not only the changed key); True if written.
+def _persist(changed: Dict[str, Any], path: Optional[str] = None) -> bool:
+    """Save the changed keys merged over what settings.json already holds; True if written.
 
-    The caller holds _SETTINGS_LOCK. settings_file keeps only the persisted keys.
+    Only the keys the request changed are written, so a value an env var forces
+    in memory is never persisted. An unreadable file is replaced by just the
+    changed keys. The caller holds _SETTINGS_LOCK.
     """
     target = path if path is not None else _settings_path()
     if not target:
         return False
-    return settings_file.save_settings(target, _settings(tether))
+    merged = settings_file.load_settings(target)
+    merged.update({k: v for k, v in changed.items() if k in settings_file.PERSISTED_KEYS})
+    return settings_file.save_settings(target, merged)
 
 
 def apply_saved_settings(tether, path: Optional[str] = None, env=None) -> dict:
@@ -154,6 +158,8 @@ def apply_saved_settings(tether, path: Optional[str] = None, env=None) -> dict:
         else:
             tether.wifi_mode = saved["wifi_mode"]
             applied["wifi_mode"] = saved["wifi_mode"]
+    if getattr(tether, "wifi_mode", "off") not in settings_file.WIFI_MODES:
+        tether.wifi_mode = "off"
     if applied:
         log.info("settings loaded from %s: %s", target, applied)
     return applied
@@ -197,7 +203,7 @@ def _settings_set(tether, req) -> dict:
         # has nothing for settings.json to write.
         if not any(key in settings_file.PERSISTED_KEYS for key in clean):
             return {"ok": True, "settings": _settings(tether), "persisted": True}
-        persisted = _persist(tether)
+        persisted = _persist(clean)
         answer = {"ok": True, "settings": _settings(tether), "persisted": persisted}
     if not persisted:
         answer["warning"] = "applied, but not saved: the setting resets on restart"
@@ -439,9 +445,10 @@ def _install_stop_handler(
 def serve(host: str = HOST, port: int = PORT, stop_on_sigterm: bool = False) -> None:
     """Run the service until stopped.
 
-    The saved settings load after the bind and before the USB monitor starts, so
-    a saved auto_reconnect off also stops the monitor (#117). Order: QT_WIFI_MODE
-    (valid) for wifi_mode, then settings.json, then the defaults.
+    The saved settings load after the bind and before the USB monitor starts
+    (#117). The monitor always starts; the callbacks check auto_reconnect and
+    do nothing while it is off, so turning it on later works. Order:
+    QT_WIFI_MODE (valid) for wifi_mode, then settings.json, then the defaults.
 
     stop_on_sigterm installs the SIGTERM stop (#110). Only the program's main()
     asks for it, so tests that call serve() keep the process's signals.
@@ -458,9 +465,8 @@ def serve(host: str = HOST, port: int = PORT, stop_on_sigterm: bool = False) -> 
         print(f"qtetherd: port {port} is already in use", file=sys.stderr)
         raise SystemExit(1)
     apply_saved_settings(tether)
-    if tether.auto_reconnect:
-        on_connected, on_disconnected = _monitor_callbacks(tether)
-        adb.start_monitoring(on_connected=on_connected, on_disconnected=on_disconnected)
+    on_connected, on_disconnected = _monitor_callbacks(tether)
+    adb.start_monitoring(on_connected=on_connected, on_disconnected=on_disconnected)
     if stop_on_sigterm:
         _install_stop_handler(tether, adb.find_serial, server)
     server.serve_forever()
