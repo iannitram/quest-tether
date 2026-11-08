@@ -429,3 +429,73 @@ class ConnectResetsLiveness(LivenessHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReplugWakesAndHeals(LivenessHarness):
+    """#123: a replug restarts the client at once, even with the headset asleep."""
+
+    def _replug_at(self, when, serial="quest-serial", end=None):
+        done = []
+
+        def hook(now):
+            if now >= when and not done:
+                done.append(now)
+                self.manager.note_replug(serial)
+            if end is not None and now >= end:
+                self.manager._running = False
+        return hook
+
+    def _run(self, hook):
+        self.clock.on_sleep = hook
+        self.manager._running = True
+        self.manager._health_loop("quest-serial")
+
+    def test_an_asleep_replug_heals_within_one_health_tick(self):
+        self.awake_at = lambda t: False
+        self.tun_up_at = lambda t: False
+
+        self._run(self._replug_at(100, end=300))
+
+        self.assertEqual(len(self.heals), 1, "one try, then the sleep-aware rules")
+        when, action = self.heals[0]
+        self.assertGreaterEqual(when, 100)
+        self.assertLessEqual(when, 100 + TetherManager.HEALTH_CHECK_INTERVAL)
+        self.assertIs(action, Heal.RESTART_CLIENT)
+        self.assertEqual(self.manager._liveness_now().restarts, 1)
+
+    def test_no_replug_means_no_heal_while_asleep(self):
+        self.awake_at = lambda t: False
+        self.run_until(300)
+        self.assertEqual(self.heals, [])
+
+    def test_a_tunnel_that_came_back_clears_the_pending_replug(self):
+        self.awake_at = lambda t: False
+        self.tun_up_at = lambda t: t < 200   # up at the replug, gone later
+
+        self._run(self._replug_at(100, end=400))
+
+        self.assertEqual(self.heals, [])
+
+    def test_a_replug_for_another_serial_does_nothing(self):
+        self.awake_at = lambda t: False
+        self._run(self._replug_at(100, serial="other", end=300))
+        self.assertEqual(self.heals, [])
+
+    def test_the_restart_cap_still_applies(self):
+        self.awake_at = lambda t: False
+        self.manager._restart_cap_reached = lambda: True
+        self.manager._give_up_healing = Mock()
+
+        self._run(self._replug_at(100, end=300))
+
+        self.assertEqual(self.heals, [])
+        self.manager._give_up_healing.assert_called_once()
+
+    def test_connect_clears_a_stale_replug(self):
+        self.manager.note_replug("quest-serial")
+        self.manager._spawn_relay = Mock(side_effect=RuntimeError("stop here"))
+        try:
+            self.manager.connect("quest-serial")
+        except Exception:
+            pass
+        self.assertFalse(self.manager._take_replug("quest-serial"))

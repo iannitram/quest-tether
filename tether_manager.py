@@ -169,6 +169,9 @@ class TetherManager:
         self._liveness = heal_policy.Liveness()
         self._liveness_lock = threading.Lock()
         self._tun_up_since: Optional[float] = None
+        # Set when the headset comes back on USB during a session (#123): the next
+        # missing-tunnel check restarts the client at once, even if it is asleep.
+        self._replug_serial: Optional[str] = None
         # Headset Wi-Fi policy while tethered: 'off' | 'sync' | 'leave'
         self._wifi_mode = os.environ.get("QT_WIFI_MODE", "off")
         self._wifi_off_failed = (
@@ -650,6 +653,19 @@ class TetherManager:
         """Log a USB event the service saw (#86). Changes no state."""
         self._log(message)
 
+    def note_replug(self, serial: str):
+        """The headset came back on USB while a session is up (#123). The next
+        missing-tunnel check restarts the client at once (the start wakes the
+        headset), instead of waiting for the headset to wake on its own."""
+        with self._liveness_lock:
+            self._replug_serial = serial
+
+    def _take_replug(self, serial: str) -> bool:
+        with self._liveness_lock:
+            pending = self._replug_serial == serial
+            self._replug_serial = None
+        return pending
+
     # --- Connect / Disconnect ---
 
     def connect(self, serial: str) -> bool:
@@ -660,6 +676,8 @@ class TetherManager:
 
         self._session_gen += 1
         gen = self._session_gen
+        with self._liveness_lock:
+            self._replug_serial = None
         self._running = True
         self._session_started = True
         self._reconnect_attempts = 0
@@ -1010,6 +1028,8 @@ class TetherManager:
         stayed up for GRACE, so a relay that dies again right after a restart
         still backs off (#65)."""
         self._healer.observe(now, True, True)
+        with self._liveness_lock:
+            self._replug_serial = None   # the tunnel came back by itself
         self._set_liveness(self._liveness_now().ineligible())
         if self._tun_up_since is None:
             self._tun_up_since = now
@@ -1021,6 +1041,18 @@ class TetherManager:
         and has been silent for the grace period, with the restart backoff (#65).
         A sleeping headset causes no heal and no breaker trip."""
         self._tun_up_since = None
+        if self._take_replug(serial):
+            # A replug is a known event (#123): one client restart now, awake or
+            # not. It counts as a restart, so the cap and the backoff still hold.
+            if self._restart_cap_reached():
+                self._give_up_healing(self._keeps_dropping_text())
+                return
+            self._log("Headset back on USB — waking it and restarting the client")
+            try:
+                self._heal(serial, Heal.RESTART_CLIENT)
+            finally:
+                self._note_restart(time.time())
+            return
         live = self._liveness_now().silent(now)
         if live.probe_due(now):
             awake = self.adb.is_headset_awake(serial)
