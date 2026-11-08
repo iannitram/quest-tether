@@ -1110,6 +1110,10 @@ class TetherManager:
             finally:
                 # Even when the reconnect raises: the backoff and the cap must still advance.
                 self._note_restart(time.time())
+                # The reconnect restarted the relay and the client: a replug seen
+                # meanwhile is handled, so it must not fire a second restart (#123).
+                with self._liveness_lock:
+                    self._replug_serial = None
 
     def _restart_cap_reached(self) -> bool:
         return self._liveness_now().restarts >= self.HEAL_FINAL_RESTARTS

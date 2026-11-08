@@ -499,3 +499,14 @@ class ReplugWakesAndHeals(LivenessHarness):
         except Exception:
             pass
         self.assertFalse(self.manager._take_replug("quest-serial"))
+
+    def test_a_relay_death_reconnect_handles_a_pending_replug(self):
+        self.manager._auto_reconnect = True
+        self.manager._running = True
+        self.manager._attempt_reconnect = Mock()
+        self.manager._wait_backoff = Mock()
+        self.manager.note_replug("quest-serial")
+
+        self.manager._relay_died("quest-serial")
+
+        self.assertFalse(self.manager._take_replug("quest-serial"))
