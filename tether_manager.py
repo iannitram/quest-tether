@@ -1586,7 +1586,8 @@ class TetherManager:
                     # the restart did not come up: the reason goes on stats (#128)
                     refusal = self._client_refusal_text()
                     self._log(refusal)
-                    self._set_state(TetherState.RECONNECTING, refusal)
+                    if not self._stop_requested():
+                        self._set_state(TetherState.RECONNECTING, refusal)
                     return
             time.sleep(1.5)
 
@@ -1608,6 +1609,10 @@ class TetherManager:
         on the stats (last_error) and the session stays Reconnecting, so the UI shows
         why, and the health loop retries after the backoff."""
         self._log(f"Failed to restart: {failure}")
+        if self._stop_requested():
+            # a disconnect landed while the restart ran: it owns the state and the
+            # headset, so no Error or Reconnecting is set over it (#116, #128)
+            return
         if getattr(failure, "fatal", False):
             self._running = False
             self._kill_process()  # no relay is left behind in Error (#107)

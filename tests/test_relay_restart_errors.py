@@ -194,6 +194,57 @@ class RestartThatCannotSucceedEndsInError(unittest.TestCase):
         self.assertFalse(h.m._running)
 
 
+class DisconnectDuringAFailedRestartOwnsTheState(unittest.TestCase):
+    def _disconnect_lands(self, h):
+        h.m._running = False  # what disconnect() does first
+
+    def test_fatal_failure_after_a_disconnect_sets_no_error_and_leaves_the_headset(self):
+        h = Harness(self)
+        h.live_session()
+        h.m._process = None
+        h.m._port_blocker = Mock(
+            side_effect=lambda port: self._disconnect_lands(h) or 4242
+        )
+
+        h.m._attempt_reconnect(SERIAL)
+
+        self.assertNotIn(TetherState.ERROR, [s for s, _ in h.states])
+        self.assertFalse(h.adb.stop_gnirehtet_client.called)
+
+    def test_retryable_failure_after_a_disconnect_sets_no_state(self):
+        h = Harness(self)
+        h.live_session()
+        h.m._process = None
+
+        def listen(port):
+            self._disconnect_lands(h)
+            return False
+
+        h.m._wait_until_listening = Mock(side_effect=listen)
+        h.m._attempt_reconnect(SERIAL)
+
+        self.assertEqual(h.m.stats.last_error, "")
+
+    def test_refused_client_start_after_a_disconnect_sets_no_state(self):
+        h = Harness(self)
+        h.live_session()
+        h.m._process = None
+
+        calls = []
+
+        def start(serial, port):
+            calls.append(1)
+            if len(calls) == 1:
+                return True
+            self._disconnect_lands(h)  # the re-issued start is refused as disconnect lands
+            return False
+
+        h.adb.start_gnirehtet_client.side_effect = start
+        h.m._attempt_reconnect(SERIAL)
+
+        self.assertEqual(h.m.stats.last_error, "")
+
+
 class OtherRestartFailuresSayWhy(unittest.TestCase):
     def test_listen_timeout_sets_the_reason_and_stays_reconnecting(self):
         h = Harness(self, mode="split")
