@@ -20,6 +20,7 @@ import collections
 import json
 import logging
 import os
+import queue
 import socket
 import signal
 import socketserver
@@ -265,6 +266,12 @@ def handle_request(tether, find_serial, req, lock=None) -> dict:
                 return {"ok": True}
             return {"ok": False, "error": tether.stats.last_error or "connect failed"}
     if cmd == "disconnect":
+        # Signal the stop before waiting for the lock, so a running connect or
+        # wifi-sync aborts at its next check instead of holding the lock for
+        # up to 65 s (#126). The same signal SIGTERM's disconnect() sends.
+        request_stop = getattr(tether, "request_stop", None)
+        if callable(request_stop):
+            request_stop()
         with lock:
             # No headset on USB: skip the headset-side steps, which would only
             # wait on a missing device (#86).
@@ -291,7 +298,31 @@ def _monitor_callbacks(tether, stopped: Optional[threading.Event] = None):
     _attempt_reconnect, and the health loop picks the headset up again.
     """
 
-    def on_connected(device_info):
+    # Plug events run on one worker thread, in order, so a connect that holds
+    # the lock for a minute never stalls the USB monitor's polling (#126).
+    jobs: "queue.Queue" = queue.Queue()
+    worker_started = threading.Lock()
+    worker: List[threading.Thread] = []
+
+    def _work() -> None:
+        while True:
+            fn, arg = jobs.get()
+            try:
+                fn(*arg)
+            except Exception:
+                log.exception("USB monitor event failed")
+            finally:
+                jobs.task_done()
+
+    def _submit(fn, *arg) -> None:
+        with worker_started:
+            if not worker:
+                t = threading.Thread(target=_work, name="qtetherd-usb-events", daemon=True)
+                worker.append(t)
+                t.start()
+        jobs.put((fn, arg))
+
+    def _connected(device_info):
         if not isinstance(device_info, dict):
             return
         with _TETHER_LOCK:
@@ -316,7 +347,7 @@ def _monitor_callbacks(tether, stopped: Optional[threading.Event] = None):
                 return
             tether.connect(serial)
 
-    def on_disconnected():
+    def _disconnected():
         with _TETHER_LOCK:
             if stopped is not None and stopped.is_set():
                 return
@@ -332,6 +363,14 @@ def _monitor_callbacks(tether, stopped: Optional[threading.Event] = None):
                 # Nothing to recover: stop the leftover relay, headset untouched.
                 tether.disconnect(headset_present=False)
 
+    def on_connected(device_info):
+        _submit(_connected, device_info)
+
+    def on_disconnected():
+        _submit(_disconnected)
+
+    # Tests wait for the queued events with .drain().
+    on_connected.drain = on_disconnected.drain = jobs.join  # type: ignore[attr-defined]
     return on_connected, on_disconnected
 
 

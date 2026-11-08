@@ -96,6 +96,11 @@ class ADBManager:
         self.last_client_error: Optional[str] = None
         # The exit code of that same call, for failures with no Error line.
         self.last_client_exit_code: Optional[int] = None
+        # Our own adb-server restart (#127): while it runs, and for a few seconds
+        # after, the USB monitor reports nothing, so the empty device list it causes
+        # is not read as an unplug, and the server coming back is not a replug.
+        self._own_restart_busy = False
+        self._own_restart_quiet_until = 0.0
 
     def _find_adb(self) -> str:
         """Locate ADB binary. Check next to exe (frozen builds) first,
@@ -329,11 +334,23 @@ class ADBManager:
             return False
         return result.returncode == 0
 
+    OWN_RESTART_QUIET_S = 5.0
+
     def restart_adb_server(self) -> None:
-        """Kill and restart the ADB server (clears wedged transports)."""
-        self.run_adb("kill-server", timeout=8)
-        time.sleep(1.0)
-        self.run_adb("start-server", timeout=15)
+        """Kill and restart the ADB server (clears wedged transports). The USB
+        monitor is quiet during the restart and for OWN_RESTART_QUIET_S after it (#127)."""
+        self._own_restart_busy = True
+        try:
+            self.run_adb("kill-server", timeout=8)
+            time.sleep(1.0)
+            self.run_adb("start-server", timeout=15)
+        finally:
+            self._own_restart_busy = False
+            self._own_restart_quiet_until = time.monotonic() + self.OWN_RESTART_QUIET_S
+
+    def own_restart_quiet(self) -> bool:
+        """True while our own adb restart runs or its quiet window is open (#127)."""
+        return self._own_restart_busy or time.monotonic() < self._own_restart_quiet_until
 
     def is_vpn_up(self, serial: str) -> bool:
         """Check if tun0 exists and has an IP — 1 ADB call."""
@@ -446,8 +463,13 @@ class ADBManager:
         """One USB poll. Fires on_connected for a new serial, and once more
         when a known serial goes from unauthorized to device: accepting the
         USB debugging prompt keeps the serial (#109). A known serial going
-        back to unauthorized fires nothing, as before."""
+        back to unauthorized fires nothing, as before. A poll during our own adb
+        restart, or just after it, fires nothing and changes no state (#127)."""
+        if self.own_restart_quiet():
+            return
         quest = self.find_quest()
+        if self.own_restart_quiet():
+            return   # the restart began while this poll's adb call was running
         status = quest.get("status") if quest else None
         if status in ("device", "unauthorized"):
             new_serial = self._current_serial != quest["serial"]
