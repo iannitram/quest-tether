@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -486,6 +487,42 @@ class WriteTools(unittest.TestCase):
         _, replies, _ = run([tool_call("status")], broken)
         self.assertTrue(replies[0]["result"]["isError"])
         self.assertIn("no platform here", replies[0]["result"]["content"][0]["text"])
+
+
+class SlowService(unittest.TestCase):
+    """A probe that times out is a busy service, not a missing one (#125)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.probes = []
+
+    def factory(self, **kwargs):
+        def probe(req, timeout=None):
+            self.probes.append(req)
+            raise socket.timeout("slow")
+
+        return cli_commands.make_backend(
+            platform=FakePlatform(self.tmp.name), request=probe, **kwargs
+        )
+
+    def test_a_state_changing_tool_reports_busy_and_runs_nothing_in_process(self):
+        arguments = {
+            "connect": {}, "disconnect": {}, "wifi_sync": {},
+            "settings_set": {"key": "auto_reconnect", "value": "on"},
+        }
+        with patch.object(cli_commands, "LocalBackend") as local:
+            for name, args in arguments.items():
+                args = dict(args, confirm=True)
+                _, replies, _ = run([tool_call(name, args)], self.factory)
+                self.assertTrue(replies[0]["result"]["isError"], name)
+                self.assertEqual(payload(replies[0])["error"], "service busy", name)
+        local.assert_not_called()
+
+    def test_a_read_tool_still_falls_back_in_process(self):
+        with patch.object(cli_commands, "LocalBackend") as local:
+            run([tool_call("status")], self.factory)
+        local.assert_called_once()
 
 
 class Dispatch(unittest.TestCase):

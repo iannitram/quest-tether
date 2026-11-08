@@ -14,6 +14,7 @@ each one refuses unless the caller passes "confirm": true.
 """
 
 import contextlib
+import inspect
 import json
 import os
 import signal
@@ -307,6 +308,30 @@ def _result(payload: dict, is_error: bool) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": bool(is_error)}
 
 
+# The tools that change the tether or the service's settings. On a timed-out
+# probe these get make_backend's BusyBackend instead of an in-process backend,
+# whose disconnect would kill the slow service's relay (#125), as the CLI does.
+STATE_CHANGING_TOOLS = frozenset(("connect", "disconnect", "wifi_sync", "settings_set"))
+
+
+def _takes_state_changing(factory) -> bool:
+    try:
+        params = inspect.signature(factory).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        p.name == "state_changing" or p.kind is inspect.Parameter.VAR_KEYWORD
+        for p in params
+    )
+
+
+def _pick_backend(factory, state_changing: bool):
+    """Call factory, passing state_changing=True when it is set and accepted."""
+    if state_changing and _takes_state_changing(factory):
+        return factory(state_changing=True)
+    return factory()
+
+
 def call_tool(name, arguments, backend_factory: Optional[Callable[[], Any]] = None) -> dict:
     """Run one tool and return its tools/call result.
 
@@ -334,7 +359,7 @@ def call_tool(name, arguments, backend_factory: Optional[Callable[[], Any]] = No
     _check_arguments(tool, args)
     factory = backend_factory or cli_commands.make_backend
     try:
-        backend = factory()
+        backend = _pick_backend(factory, tool.name in STATE_CHANGING_TOOLS)
         result = tool.fn(backend, args)
     except Exception as exc:
         return _result({"ok": False, "error": str(exc) or exc.__class__.__name__}, True)
@@ -411,8 +436,8 @@ class _KeepInProcess:
         self._factory = factory
         self._local = None
 
-    def __call__(self):
-        backend = self._factory()
+    def __call__(self, state_changing: bool = False):
+        backend = _pick_backend(self._factory, state_changing)
         if getattr(backend, "mode", None) == "service":
             return backend
         if self._local is None:
