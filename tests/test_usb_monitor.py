@@ -111,6 +111,7 @@ class ServicePairing(unittest.TestCase):
 
         adb._monitor_step()
         adb._monitor_step()
+        on_connected.drain()
         tether.connect.assert_not_called()
         tether.note_usb_event.assert_called_once_with(
             "Headset unauthorized — accept the USB debugging prompt"
@@ -118,6 +119,7 @@ class ServicePairing(unittest.TestCase):
 
         adb._monitor_step()
         adb._monitor_step()
+        on_connected.drain()
         tether.connect.assert_called_once_with(SERIAL)
 
     def test_unauthorized_event_logs_and_starts_nothing(self):
@@ -130,6 +132,7 @@ class ServicePairing(unittest.TestCase):
         on_connected, _ = qtetherd._monitor_callbacks(tether)
 
         on_connected(dict(quest("unauthorized"), _unauthorized=True))
+        on_connected.drain()
 
         tether._spawn_relay.assert_not_called()
         self.assertEqual(adb.mock_calls, [])
