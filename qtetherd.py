@@ -361,9 +361,11 @@ def make_server(
             self.wfile.write((json.dumps(answer) + "\n").encode("utf-8"))
 
     class Server(socketserver.ThreadingTCPServer):
-        # True so a restart can bind while the last requests sit in TIME_WAIT
-        # (#125); Linux still refuses a second live listener.
-        allow_reuse_address = True
+        # On so a restart can bind while the last requests sit in TIME_WAIT
+        # (#125); Linux still refuses a second live listener. Off on Windows,
+        # where SO_REUSEADDR lets a second listener take the port, and a port
+        # in TIME_WAIT does not block a new bind anyway.
+        allow_reuse_address = sys.platform != "win32"
         daemon_threads = True
 
     return Server((host, port), Handler)
