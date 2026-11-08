@@ -149,6 +149,7 @@ class Serve(unittest.TestCase):
         self.assertEqual(tether.stats.state, TetherState.RECONNECTING)
         self.assertEqual(tether.stats.reconnect_count, 1, "a replug is not a reconnect")
         self.assertIn("Headset back on USB while reconnecting — no new relay", logs)
+        self.assertTrue(tether._take_replug("HEADSET"), "the core is told about the replug (#123)")
 
     def test_unplug_while_connected_leaves_recovery_to_the_health_loop(self):
         adb, tether, logs = self._real_tether(TetherState.CONNECTED)
