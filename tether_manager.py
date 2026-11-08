@@ -148,6 +148,10 @@ class TetherManager:
         self._running = False
         # True once connect() has started a session. See _stop_requested (#103).
         self._session_started = False
+        # Bumped by disconnect(): a generation the error-path restore and its ERROR
+        # check compare against, so a stop (or the new connect it precedes) that
+        # lands mid-restore is seen (#116).
+        self._disconnect_count = 0
         self._auto_reconnect = True
         self._reconnect_attempts = 0
 
@@ -751,6 +755,7 @@ class TetherManager:
         talk to the headset are skipped, so no adb call waits on a missing
         device. Only the health thread and the relay are stopped.
         """
+        self._disconnect_count += 1
         self._running = False
         self._set_state(TetherState.STOPPING)
 
@@ -1006,8 +1011,7 @@ class TetherManager:
             self._running = False
             # The relay is already dead, so only the headset's VPN and Wi-Fi need
             # putting back, before ERROR (#116).
-            self._restore_headset_best_effort(serial)
-            self._set_state(TetherState.ERROR, "Process died")
+            self._end_in_error(serial, "Process died")
             return
         if self._restart_cap_reached():
             self._give_up_healing(self._keeps_dropping_text(), serial)
@@ -1064,15 +1068,35 @@ class TetherManager:
         # port taken and fails (#107). ERROR then means no relay is running.
         self._kill_process()
         # Then put the headset's VPN and Wi-Fi back, best effort (#116).
+        self._end_in_error(serial, error)
+
+    def _end_in_error(self, serial: Optional[str], error: str) -> None:
+        """The three error exits: put the headset back, then set ERROR (#116).
+
+        If disconnect() (or the new connect it precedes) ran while the restore was
+        in flight, it owns the state, so no ERROR is set over it."""
+        gen = self._disconnect_count
         self._restore_headset_best_effort(serial)
-        self._set_state(TetherState.ERROR, error)
+        if self._disconnect_count == gen:
+            self._set_state(TetherState.ERROR, error)
 
     def _restore_headset_best_effort(self, serial: Optional[str]) -> None:
         """Error paths: STOP intent + Wi-Fi restore as disconnect() does, with short caps (#116).
 
         Never raises. Skips when there is no serial or the headset is not listed,
         so no adb call waits on an absent device. The relay is already stopped
-        by the caller."""
+        by the caller. If disconnect() lands while the restore is in flight it owns
+        the headset and the state, so the rest of the steps are skipped (#116)."""
+        gen = self._disconnect_count
+
+        def _aborted():
+            if self._disconnect_count != gen:
+                self._log(
+                    "Disconnect during the error-path restore — leaving the rest to it"
+                )
+                return True
+            return False
+
         if not serial:
             self._log("Error path: no headset serial — skipping the headset restore")
             return
@@ -1081,14 +1105,22 @@ class TetherManager:
                 self._log("Headset not reachable — VPN may still be on")
                 return
             self._log("Error path: telling Quest to drop VPN...")
+            if _aborted():
+                return
             if not self.adb.stop_gnirehtet_client(serial, timeout=3.0):
                 self._log("Headset refused the STOP intent on the error path")
+            if _aborted():
+                return
             if not self._wait_vpn_closed(serial, deadline=self.ERROR_RESTORE_VPN_WAIT):
                 self._log("VPN still up on the error path — force-stopping...")
                 self.adb.force_stop_gnirehtet(serial)
+            if _aborted():
+                return
             self._log("Error path: toggling Wi-Fi to restore DNS...")
             self.adb.toggle_wifi(serial, wait_seconds=self.ERROR_RESTORE_WIFI_WAIT)
             self._clear_wifi_flag()
+            if _aborted():
+                return
             if self.adb.check_wifi_connectivity(serial):
                 self._log("Quest Wi-Fi restored on the error path")
             else:
@@ -1328,8 +1360,7 @@ class TetherManager:
             self._log(f"Max reconnect attempts ({self.MAX_RECONNECT_ATTEMPTS}) reached")
             self._running = False
             self._kill_process()  # no relay is left behind in ERROR (#107)
-            self._restore_headset_best_effort(serial)  # VPN and Wi-Fi back (#116)
-            self._set_state(TetherState.ERROR, "Max reconnect attempts reached")
+            self._end_in_error(serial, "Max reconnect attempts reached")
             return
 
         if self._reconnect_attempts == 0:
