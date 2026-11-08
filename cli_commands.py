@@ -154,21 +154,35 @@ class LocalBackend(Backend):
     def disconnect(self):
         reply = _reply(self._handle({"cmd": "disconnect"}), "disconnect")
         # A `connect` in an earlier process has no TetherManager here any more,
-        # but its relay can still hold the port. Clean that one up too.
+        # so the disconnect above skipped the headset. Its relay may still hold
+        # the port, or may already be dead with the headset's VPN still up and
+        # Wi-Fi still off. Clean the headset either way, then the relay.
         try:
             if not self.tether.is_relay_running():
                 pids = self.platform.stale_relay_pids(TetherManager.RELAY_PORT)
-                if pids:
-                    serial = self.adb.find_serial()
-                    if serial:
-                        self.adb.stop_gnirehtet_client(serial)
-                        self.adb.force_stop_gnirehtet(serial)
-                        self.adb.remove_all_reverse_tunnels(serial)
-                    for pid in pids:
-                        self.platform.kill(pid)
+                self._clean_headset()
+                for pid in pids:
+                    self.platform.kill(pid)
         except Exception:
             pass
         return reply
+
+    def _clean_headset(self):
+        serial = self.adb.find_serial()
+        if not serial:
+            return
+        for step in (
+            self.adb.stop_gnirehtet_client,
+            self.adb.force_stop_gnirehtet,
+            self.adb.remove_all_reverse_tunnels,
+            getattr(self.tether, "restore_wifi_if_flagged", None),
+        ):
+            if step is None:
+                continue
+            try:
+                step(serial)
+            except Exception:
+                pass
 
     def wifi_sync(self):
         return _reply(self._handle({"cmd": "wifi-sync"}), "wifi-sync")

@@ -319,7 +319,8 @@ class DeathWithAutoReconnectOn(unittest.TestCase):
         manager._relay_died("quest-serial")
 
         manager._attempt_reconnect.assert_not_called()
-        self.assertEqual(manager.stats.state, TetherState.ERROR)
+        # After a stop, the death sets no state: disconnect() owns it (#116).
+        self.assertEqual(manager.stats.state, TetherState.IDLE)
 
     def test_a_death_with_auto_reconnect_on_keeps_the_loop_running(self):
         manager = make_manager()
