@@ -1389,13 +1389,18 @@ class TetherManager:
     # --- Headset Wi-Fi policy ---
 
     def _apply_wifi_policy(self, serial: str):
-        self._last_wifi_check = time.time()
         if self._wifi_mode == "off":
             # Only once the tunnel is Connected: while Starting no relay client is
-            # counted yet, and a failed check then must not block the policy (#129)
-            if self.stats.state is TetherState.CONNECTED:
-                self._wifi_off(serial)
-        elif self._wifi_mode == "sync":
+            # counted yet, and a failed check then must not block the policy (#129).
+            # A skipped call leaves _last_wifi_check alone, so the health loop applies
+            # it on the first cycle after the promotion, not 30 s later.
+            if self.stats.state is not TetherState.CONNECTED:
+                return
+            self._last_wifi_check = time.time()
+            self._wifi_off(serial)
+            return
+        if self._wifi_mode == "sync":
+            self._last_wifi_check = time.time()
             self._sync_wifi(serial)
 
     def _headset_wifi_restore_needed(self) -> bool:

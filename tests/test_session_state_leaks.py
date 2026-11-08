@@ -86,6 +86,7 @@ class WifiOffFailureIsPerSession(Base):
 
         self.assertFalse(self.wifi_disabled(), "Wi-Fi was cut while the tunnel was Starting")
         self.assertFalse(self.m._wifi_off_failed)
+        self.assertEqual(self.m._last_wifi_check, 0.0, "a skipped policy must not start the 30 s wait")
 
     def test_wifi_off_runs_once_connected(self):
         self.m._wifi_mode = "off"
