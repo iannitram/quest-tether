@@ -420,6 +420,9 @@ class QuestTetherApp(ctk.CTk):
         # Minimize button → also go to tray
         self.bind("<Unmap>", self._on_minimize)
 
+        # Show the service's saved settings in the switches (#117)
+        self._load_service_settings()
+
     def _probe_service(self):
         """The service's status reply, or None when qtetherd did not answer.
 
@@ -511,9 +514,47 @@ class QuestTetherApp(ctk.CTk):
             if answer and not answer.get("ok", False):
                 message = answer.get("error") or "settings change failed"
                 self.after(0, lambda: self._log_panel.append(message))
+            elif answer and answer.get("warning"):
+                # Applied in the service, but not saved to settings.json (#117).
+                message = answer["warning"]
+                self.after(0, lambda: self._log_panel.append(message))
 
         threading.Thread(target=send, daemon=True).start()
         return True
+
+    def _load_service_settings(self):
+        """Read the service's saved settings in a worker; the switches are set on the Tk thread (#117).
+
+        Only in service mode. A timeout or refusal keeps the widget defaults.
+        """
+        if not self._service_mode:
+            return
+
+        def fetch():
+            answer = self._service_request(
+                {"cmd": "settings-get"}, timeout=2.0, quiet=True
+            )
+            if isinstance(answer, dict) and answer.get("ok"):
+                self.after(0, self._apply_settings_reply, answer)
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _apply_settings_reply(self, answer: dict):
+        """Set the switches from settings-get. Sets only, so nothing is written back (#117)."""
+        settings = answer.get("settings") if isinstance(answer, dict) else None
+        if not isinstance(settings, dict):
+            return
+        if isinstance(settings.get("auto_reconnect"), bool):
+            self._auto_reconnect_var.set(settings["auto_reconnect"])
+        if isinstance(settings.get("crash_reports"), bool):
+            self._crash_reports_var.set(settings["crash_reports"])
+        label = next(
+            (name for name, mode in self._wifi_labels.items()
+             if mode == settings.get("wifi_mode")),
+            None,
+        )
+        if label is not None:
+            self._wifi_menu.set(label)
 
     def _run_service_command(self, cmd: dict, timeout: float = 90.0):
         """Run connect/disconnect in the service, then show the fresh status."""

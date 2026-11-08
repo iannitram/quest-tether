@@ -20,6 +20,8 @@ class Serve(unittest.TestCase):
         self.dir = tmp.name
         self.patches = [
             patch("qtetherd.crash_report.data_dir", return_value=self.dir),
+            # No real settings.json is read or written (#117).
+            patch("qtetherd._settings_path", return_value=os.path.join(self.dir, "settings.json")),
             patch("qtetherd.crash_report.install"),
             patch("qtetherd.logging.basicConfig"),
         ]
@@ -106,10 +108,18 @@ class Serve(unittest.TestCase):
         callbacks["on_disconnected"]()
         tether.disconnect.assert_not_called()
 
-    def test_auto_reconnect_off_does_not_start_usb_monitoring(self):
-        adb, _ = self._serve(False)
+    def test_auto_reconnect_off_still_starts_monitoring_but_the_callbacks_do_nothing(self):
+        # The flag can be turned on later (settings-set), so the monitor must already run (#117).
+        adb, tether = self._serve(False)
 
-        adb.start_monitoring.assert_not_called()
+        adb.start_monitoring.assert_called_once()
+        callbacks = adb.start_monitoring.call_args.kwargs
+        tether.stats.state = TetherState.IDLE
+        callbacks["on_connected"]({"serial": "HEADSET", "status": "device"})
+        tether.connect.assert_not_called()
+        tether.is_relay_running.return_value = True
+        callbacks["on_disconnected"]()
+        tether.disconnect.assert_not_called()
 
     def test_monitor_callback_starts_no_second_relay_while_connected(self):
         tether = TetherManager(Mock(), gnirehtet_path="fake.jar")

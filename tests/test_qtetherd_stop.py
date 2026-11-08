@@ -224,6 +224,7 @@ class ServeWiring(unittest.TestCase):
             patch("qtetherd.TetherManager", return_value=tether),
             patch("qtetherd.make_server", return_value=server),
             patch("qtetherd.signal.signal") as install,
+            patch("qtetherd._settings_path", return_value=None),
         ):
             qtetherd.serve(**kwargs)
         return install, server

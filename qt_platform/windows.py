@@ -103,6 +103,14 @@ class WindowsPlatform(Platform):
         os.makedirs(path, exist_ok=True)
         return path
 
+    def config_dir(self) -> str:
+        # %APPDATA%\QuestTether; no service on Windows reads it yet (#117)
+        path = os.path.join(
+            os.environ.get("APPDATA", os.path.expanduser("~")), "QuestTether"
+        )
+        os.makedirs(path, exist_ok=True)
+        return path
+
     def tool_path(self, name: str, base_dirs: Sequence[str]) -> Optional[str]:
         # from adb_manager.ADBManager._find_adb (local-folder check, then `where`); None instead of "adb"
         for base in base_dirs:

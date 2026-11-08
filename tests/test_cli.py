@@ -4,6 +4,7 @@ python -m unittest discover -s tests"""
 import io
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -191,6 +192,26 @@ class FakeRequest:
             raise self.error
         reply = self.replies.get(cmd.get("cmd"), {"ok": True})
         return reply(cmd) if callable(reply) else reply
+
+
+_SETTINGS_PATCH = None
+_SETTINGS_FOLDER = None
+
+
+def setUpModule():
+    # LocalBackend's settings-set saves settings.json (#117): keep it in a temp folder.
+    global _SETTINGS_PATCH, _SETTINGS_FOLDER
+    _SETTINGS_FOLDER = tempfile.mkdtemp()
+    _SETTINGS_PATCH = patch(
+        "qtetherd._settings_path",
+        return_value=os.path.join(_SETTINGS_FOLDER, "settings.json"),
+    )
+    _SETTINGS_PATCH.start()
+
+
+def tearDownModule():
+    _SETTINGS_PATCH.stop()
+    shutil.rmtree(_SETTINGS_FOLDER, ignore_errors=True)
 
 
 def make_env(replies=None):

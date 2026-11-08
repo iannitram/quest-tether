@@ -17,9 +17,17 @@ def relay_server_command(tools_dir: str, port: int) -> List[str]:
     return [posixpath.join(tools_dir, "gnirehtet"), "relay", "-p", str(port)]
 
 
+def config_dir_path(env: Mapping[str, str], home: str) -> str:
+    """The app's config folder (settings.json lives here): $XDG_CONFIG_HOME or ~/.config (#117)."""
+    return posixpath.join(_config_base(env, home), "quest-tether")
+
+
+def _config_base(env: Mapping[str, str], home: str) -> str:
+    return env.get("XDG_CONFIG_HOME") or posixpath.join(home, ".config")
+
+
 def autostart_path(env: Mapping[str, str], home: str) -> str:
-    base = env.get("XDG_CONFIG_HOME") or posixpath.join(home, ".config")
-    return posixpath.join(base, "autostart", "quest-tether.desktop")
+    return posixpath.join(_config_base(env, home), "autostart", "quest-tether.desktop")
 
 
 def autostart_command(exe: str, frozen: bool, main_py: str) -> str:

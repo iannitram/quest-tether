@@ -408,6 +408,15 @@ class Logs(unittest.TestCase):
 
 
 class Settings(unittest.TestCase):
+    def setUp(self):
+        # settings-set saves settings.json: keep it in a temp folder, never the real config dir.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.settings_file = os.path.join(tmp.name, "settings.json")
+        patcher = patch("qtetherd._settings_path", return_value=self.settings_file)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_get_has_the_window_settings(self):
         with patch("qtetherd.crash_report.is_enabled", return_value=True):
             answer = qtetherd.handle_request(
@@ -455,6 +464,7 @@ class Settings(unittest.TestCase):
                     "wifi_mode": "sync",
                     "crash_reports": True,
                 },
+                "persisted": True,
             },
         )
 
