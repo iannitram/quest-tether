@@ -282,7 +282,7 @@ def handle_request(tether, find_serial, req, lock=None) -> dict:
     return {"ok": False, "error": "unknown command: " + cmd}
 
 
-def _monitor_callbacks(tether):
+def _monitor_callbacks(tether, stopped: Optional[threading.Event] = None):
     """Connect/disconnect callbacks for USB monitoring when auto-reconnect is on.
 
     The health loop is the one recovery path (#86). An unplug never runs the
@@ -295,6 +295,8 @@ def _monitor_callbacks(tether):
         if not isinstance(device_info, dict):
             return
         with _TETHER_LOCK:
+            if stopped is not None and stopped.is_set():
+                return  # the service is stopping: no connect after the disconnect (#125)
             serial = device_info.get("serial")
             if not tether.auto_reconnect or not serial:
                 return
@@ -316,6 +318,8 @@ def _monitor_callbacks(tether):
 
     def on_disconnected():
         with _TETHER_LOCK:
+            if stopped is not None and stopped.is_set():
+                return
             if not tether.auto_reconnect:
                 return
             state = tether.stats.state
@@ -357,7 +361,9 @@ def make_server(
             self.wfile.write((json.dumps(answer) + "\n").encode("utf-8"))
 
     class Server(socketserver.ThreadingTCPServer):
-        allow_reuse_address = False
+        # True so a restart can bind while the last requests sit in TIME_WAIT
+        # (#125); Linux still refuses a second live listener.
+        allow_reuse_address = True
         daemon_threads = True
 
     return Server((host, port), Handler)
@@ -421,7 +427,12 @@ def stop_tether(
 
 
 def _install_stop_handler(
-    tether, find_serial: Callable[[], Any], server, cap: float = STOP_CAP_SECONDS
+    tether,
+    find_serial: Callable[[], Any],
+    server,
+    cap: float = STOP_CAP_SECONDS,
+    adb=None,
+    stopped: Optional[threading.Event] = None,
 ) -> None:
     """Make SIGTERM run stop_tether, then end serve_forever() (#110).
 
@@ -434,6 +445,16 @@ def _install_stop_handler(
             return
         stopping.set()
         log.info("SIGTERM: stopping the tether before exit")
+        # Stop the USB monitor first (#125): the flag makes a plug event that
+        # is already running skip its connect, and stop_monitoring() ends the
+        # loop, so nothing connects after the disconnect.
+        if stopped is not None:
+            stopped.set()
+        if adb is not None:
+            try:
+                adb.stop_monitoring()
+            except Exception:
+                log.exception("stopping the USB monitor failed")
         stop_tether(tether, find_serial, cap=cap)
         # shutdown() waits for serve_forever(), which is the thread running
         # this handler, so it must run on another thread.
@@ -465,10 +486,11 @@ def serve(host: str = HOST, port: int = PORT, stop_on_sigterm: bool = False) -> 
         print(f"qtetherd: port {port} is already in use", file=sys.stderr)
         raise SystemExit(1)
     apply_saved_settings(tether)
-    on_connected, on_disconnected = _monitor_callbacks(tether)
+    stopped = threading.Event()
+    on_connected, on_disconnected = _monitor_callbacks(tether, stopped)
     adb.start_monitoring(on_connected=on_connected, on_disconnected=on_disconnected)
     if stop_on_sigterm:
-        _install_stop_handler(tether, adb.find_serial, server)
+        _install_stop_handler(tether, adb.find_serial, server, adb=adb, stopped=stopped)
     server.serve_forever()
 
 

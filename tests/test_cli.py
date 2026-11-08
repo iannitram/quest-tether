@@ -256,6 +256,31 @@ class BackendSelection(unittest.TestCase):
         backend = cli_commands.make_backend(platform=platform, request=request)
         self.assertIsInstance(backend, cli_commands.LocalBackend)
 
+    def test_timeout_is_busy_for_a_state_changing_command(self):
+        platform = FakePlatform(tempfile.mkdtemp())
+        request = FakeRequest(error=socket.timeout("slow"))
+        backend = cli_commands.make_backend(
+            platform=platform, request=request, state_changing=True
+        )
+        self.assertNotIsInstance(backend, cli_commands.LocalBackend)
+        for result in (
+            backend.connect(),
+            backend.disconnect(),
+            backend.wifi_sync(),
+            backend.settings_set({"auto_reconnect": True}),
+        ):
+            self.assertEqual(result["error"], "service busy")
+            self.assertEqual(cli_format.exit_code(result), 1)
+        self.assertEqual(request.calls, [({"cmd": "status"}, 1)])
+
+    def test_refused_still_falls_back_for_a_state_changing_command(self):
+        platform = FakePlatform(tempfile.mkdtemp())
+        request = FakeRequest(error=ConnectionRefusedError("no service"))
+        backend = cli_commands.make_backend(
+            platform=platform, request=request, state_changing=True
+        )
+        self.assertIsInstance(backend, cli_commands.LocalBackend)
+
     def test_silent_service_falls_back_in_process(self):
         platform = FakePlatform(tempfile.mkdtemp())
         request = FakeRequest(error=ConnectionError("no answer"))
@@ -287,6 +312,36 @@ class BackendSelection(unittest.TestCase):
         result = backend.status()
         self.assertEqual(result["ok"], False)
         self.assertIn("bad service reply", result["error"])
+
+
+class StateChangingWiring(unittest.TestCase):
+    def _flag(self, argv):
+        seen = []
+
+        def fake(**kwargs):
+            seen.append(kwargs.get("state_changing"))
+            return cli_commands.BusyBackend(platform=FakePlatform(tempfile.mkdtemp()))
+
+        with patch.object(cli_commands, "make_backend", fake):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                code = cli.main(argv)
+        return seen, code
+
+    def test_state_changing_commands_ask_for_busy_handling(self):
+        for argv in (
+            ["connect"],
+            ["disconnect"],
+            ["wifi-sync"],
+            ["settings", "set", "auto_reconnect", "on"],
+        ):
+            seen, code = self._flag(argv)
+            self.assertEqual(seen, [True], argv)
+            self.assertEqual(code, 1, argv)
+
+    def test_read_only_commands_do_not(self):
+        for argv in (["status"], ["logs"], ["settings", "get"]):
+            seen, _ = self._flag(argv)
+            self.assertEqual(seen, [False], argv)
 
 
 class ServicePath(unittest.TestCase):

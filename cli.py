@@ -292,7 +292,10 @@ def _run(args) -> int:
 
         return mcp_server.serve()
 
-    backend = cli_commands.make_backend()
+    changes_state = command in ("connect", "disconnect", "wifi-sync") or (
+        command == "settings" and args.settings_action != "get"
+    )
+    backend = cli_commands.make_backend(state_changing=changes_state)
 
     if command == "status":
         return _finish(cli_commands.status(backend), args, _render_status)
