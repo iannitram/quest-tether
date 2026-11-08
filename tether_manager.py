@@ -54,6 +54,22 @@ ACTIVE_CONNECT_STATES = (
 STOPPED_BY_DISCONNECT = "relay start stopped by disconnect"
 
 
+class StartFailure(str):
+    """A failed relay start: the reason text, plus what the caller must do about it (#128).
+
+    fatal: a retry cannot succeed (a port held by another program, a relay binary
+    that is missing or not executable), so a reconnect ends in Error at once.
+    client_started: the Quest client start was attempted, so the headset VPN may be
+    up and the error exit must restore the headset (_end_in_error).
+    """
+
+    def __new__(cls, text: str, fatal: bool = False, client_started: bool = False):
+        obj = super().__new__(cls, text)
+        obj.fatal = fatal
+        obj.client_started = client_started
+        return obj
+
+
 def _state_for_tunnel(tun0_present: bool, relay_clients: Optional[int] = None) -> TetherState:
     """Return the user-visible state for one tunnel check (#1, #62).
 
@@ -481,17 +497,15 @@ class TetherManager:
         port = self.RELAY_PORT
         blocker = self._port_blocker(port)
         if blocker is not None:
-            return (
-                f"port {port} is held by PID {blocker}, which is not gnirehtet"
-                " — not starting the relay"
-            )
+            return StartFailure(self._blocker_text(port, blocker), fatal=True)
 
         try:
             proc = self._spawn_relay_if_live(serial)
         except FileNotFoundError:
-            return "Java or gnirehtet JAR not found"
+            return StartFailure("Java or gnirehtet JAR not found", fatal=True)
         except Exception as e:
-            return str(e)
+            # An OSError here is Popen failing: the binary is missing or not executable (#128)
+            return StartFailure(str(e), fatal=isinstance(e, OSError))
         if proc is None:
             return STOPPED_BY_DISCONNECT
         self._log(f"relay started (PID {proc.pid}), waiting for port {port}")
@@ -518,8 +532,14 @@ class TetherManager:
             return STOPPED_BY_DISCONNECT
         if not self.adb.start_gnirehtet_client(serial, port):
             self._kill_process()
-            return self._client_refusal_text()
+            return StartFailure(self._client_refusal_text(), client_started=True)
         return None
+
+    def _blocker_text(self, port: int, blocker: int) -> str:
+        return (
+            f"port {port} is held by PID {blocker}, which is not gnirehtet"
+            " — not starting the relay"
+        )
 
     def _start_run_relay(self, serial: str) -> bool:
         """Run mode: `gnirehtet run` starts relay, tunnel and client in one process."""
@@ -715,7 +735,12 @@ class TetherManager:
                 return False  # disconnect() owns the state now (#103)
             if error:
                 self._log(error)
-                self._set_state(TetherState.ERROR, error)
+                if getattr(error, "client_started", False):
+                    # the client start was refused after it ran: the headset may
+                    # still hold the VPN, so restore it before Error (#128)
+                    self._end_in_error(serial, error)
+                else:
+                    self._set_state(TetherState.ERROR, error)
                 return False
         else:
             self._log("Starting gnirehtet run...")
@@ -738,7 +763,8 @@ class TetherManager:
                 if self._connect_stopped(gen):
                     return False
                 self._log("gnirehtet process died while waiting for tunnel")
-                self._set_state(TetherState.ERROR, "Process died during setup")
+                # the client start has run, so the headset VPN may be up: restore it (#128)
+                self._end_in_error(serial, "Process died during setup")
                 return False
             up = self.adb.is_vpn_up(serial)
             if self._connect_stopped(gen):
@@ -1142,6 +1168,13 @@ class TetherManager:
     def _wait_backoff(self):
         """Sleep until the restart backoff allows the next relay restart. Steps of
         at most 1 s, so a disconnect is not held up by a long sleep (#65)."""
+        due = self._liveness_now().next_restart_at
+        if self._running and due is not None and due > time.time():
+            # one line for the whole wait, with the time it ends (#128)
+            self._log(
+                "Relay restart waiting until "
+                + time.strftime("%H:%M:%S", time.localtime(due))
+            )
         while self._running:
             due = self._liveness_now().next_restart_at
             if due is None:
@@ -1500,12 +1533,20 @@ class TetherManager:
 
         # Restart the relay
         self._kill_stale_process()
+        # A program other than gnirehtet on the port: no restart can take it (#128)
+        blocker = self._port_blocker(self.RELAY_PORT)
+        if blocker is not None:
+            self._fail_restart(
+                actual_serial,
+                StartFailure(self._blocker_text(self.RELAY_PORT, blocker), fatal=True),
+            )
+            return
         if self.relay_mode == "split":
             error = self._start_split_relay(actual_serial)
             if error == STOPPED_BY_DISCONNECT:
                 return
             if error:
-                self._log(f"Failed to restart: {error}")
+                self._fail_restart(actual_serial, error)
                 return
             self._log("relay restarted")
         else:
@@ -1515,7 +1556,10 @@ class TetherManager:
                     return  # disconnect() came first (#103)
                 self._log(f"gnirehtet restarted (PID {proc.pid})")
             except Exception as e:
-                self._log(f"Failed to restart: {e}")
+                # an OSError is Popen failing: the binary is missing or not executable (#128)
+                self._fail_restart(
+                    actual_serial, StartFailure(str(e), fatal=isinstance(e, OSError))
+                )
                 return
 
         # Wait for tun0; re-issue the client start once if the first try was missed
@@ -1539,7 +1583,10 @@ class TetherManager:
             if i == 4 and not tun0_up:
                 self._log("tun0 slow — re-issuing client start")
                 if not self.adb.start_gnirehtet_client(actual_serial, self.RELAY_PORT):
-                    self._log_client_start_refused()
+                    # the restart did not come up: the reason goes on stats (#128)
+                    refusal = self._client_refusal_text()
+                    self._log(refusal)
+                    self._set_state(TetherState.RECONNECTING, refusal)
                     return
             time.sleep(1.5)
 
@@ -1551,6 +1598,22 @@ class TetherManager:
             self._log("Reconnect: tun0 up, no relay client yet — waiting for one")
         else:
             self._log("Reconnect: tun0 not detected — will retry")
+
+    def _fail_restart(self, serial: str, failure: str):
+        """A relay restart that did not come up (#128).
+
+        A fatal failure (a port held by another program, a relay binary that is
+        missing or not executable) ends the session now: no retry can succeed, so
+        the headset is put back and Error is set. Any other failure sets its reason
+        on the stats (last_error) and the session stays Reconnecting, so the UI shows
+        why, and the health loop retries after the backoff."""
+        self._log(f"Failed to restart: {failure}")
+        if getattr(failure, "fatal", False):
+            self._running = False
+            self._kill_process()  # no relay is left behind in Error (#107)
+            self._end_in_error(serial, str(failure))
+            return
+        self._set_state(TetherState.RECONNECTING, str(failure))
 
     def _wait_for_device_and_reconnect(self, serial: str):
         """Wait for Quest to reappear on USB, then reconnect."""
