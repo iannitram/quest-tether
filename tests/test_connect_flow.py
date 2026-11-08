@@ -229,6 +229,11 @@ class DisconnectTests(unittest.TestCase):
         self.clock = FakeClock()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+
+    def _patch_fake_time(self):
+        # Patching tether_manager.time patches the shared time module, so a real
+        # subprocess (the manager's `which java` lookup) would sleep on the fake clock
+        # and drift it (CI flake). So the manager is built first, then time is faked.
         patcher_m = patch("tether_manager.time.monotonic", self.clock.monotonic)
         patcher_s = patch("tether_manager.time.sleep", self.clock.sleep)
         patcher_m.start()
@@ -239,6 +244,7 @@ class DisconnectTests(unittest.TestCase):
     def make_manager(self, **adb_kwargs):
         adb = FakeAdb(self.clock, self.calls, **adb_kwargs)
         manager = TetherManager(adb, gnirehtet_path="fake.jar")
+        self._patch_fake_time()
         manager.platform = Mock()  # never kill a real pid from a test
         manager._wifi_flag = os.path.join(self.tmp.name, "wifi-off.flag")
         manager._process = FakeProcess(self.calls)
