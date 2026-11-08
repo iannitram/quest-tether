@@ -36,12 +36,6 @@ class FakeClock:
 class TunnelWithoutClient(unittest.TestCase):
     def setUp(self):
         self.clock = FakeClock()
-        for target, fake in (("tether_manager.time.time", self.clock.time),
-                             ("tether_manager.time.sleep", self.clock.sleep)):
-            patcher = patch(target, fake)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
         self.awake_at = lambda t: True        # headset state by time
         self.adb = Mock()
         self.adb.adb_path = "adb"
@@ -49,6 +43,18 @@ class TunnelWithoutClient(unittest.TestCase):
         self.adb.device_listed.return_value = True
 
         self.manager = TetherManager(self.adb, gnirehtet_path="fake.jar")
+        # No real subprocess may run under the fake clock: patching
+        # tether_manager.time patches the shared time module, so subprocess's own
+        # wait loop sleeps on it and the clock drifts by 1 ms (flake). So build the
+        # manager (its `which java` lookup) first, and stub the port check (`ss`).
+        self.manager.platform = Mock(wraps=self.manager.platform)
+        self.manager.platform.port_holders.return_value = []
+        for target, fake in (("tether_manager.time.time", self.clock.time),
+                             ("tether_manager.time.sleep", self.clock.sleep)):
+            patcher = patch(target, fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
         self.manager.POST_CONNECT_COOLDOWN = 0
         self.manager._wifi_mode = "leave"
         self.manager._auto_reconnect = True
