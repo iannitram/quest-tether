@@ -12,6 +12,7 @@ Every command prints human-readable text by default and one JSON object with
 
 import argparse
 import json
+import signal
 import sys
 import time
 
@@ -218,9 +219,38 @@ def _render_service(result) -> str:
     return "Service: %s" % detail
 
 
+def _stop_on_signal(signum, frame):
+    raise KeyboardInterrupt
+
+
+def _hold_signals():
+    """SIGTERM and SIGHUP (kill, a closed terminal) stop the hold like Ctrl+C."""
+    names = ("SIGTERM", "SIGHUP")
+    previous = {}
+    for name in names:
+        signum = getattr(signal, name, None)
+        if signum is None:
+            continue
+        try:
+            previous[signum] = signal.signal(signum, _stop_on_signal)
+        except (ValueError, OSError):
+            pass
+    return previous
+
+
+def _restore_signals(previous):
+    for signum, handler in previous.items():
+        try:
+            signal.signal(signum, handler)
+        except (ValueError, OSError):
+            pass
+
+
 def _hold(backend, stream) -> int:
-    """Print status once a second until Ctrl+C, then disconnect (in-process only)."""
+    """Print status once a second until Ctrl+C, SIGTERM or SIGHUP, then
+    disconnect (in-process only)."""
     print("Holding the tether; press Ctrl+C to stop.", file=stream)
+    previous = _hold_signals()
     try:
         while True:
             reply = backend.status()
@@ -238,6 +268,9 @@ def _hold(backend, stream) -> int:
             time.sleep(1.0)
     except KeyboardInterrupt:
         print(file=stream)
+    finally:
+        # A second signal during the cleanup ends the process the normal way.
+        _restore_signals(previous)
     result = backend.disconnect()
     code = cli_format.exit_code(result)
     if code:
