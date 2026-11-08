@@ -245,6 +245,7 @@ def _monitor_callbacks(tether):
                 tether.note_usb_event(
                     f"Headset back on USB while {state.value} — no new relay"
                 )
+                tether.note_replug(serial)
                 return
             tether.connect(serial)
 

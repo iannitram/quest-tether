@@ -175,6 +175,9 @@ class FakeTether:
     def is_relay_running(self):
         return False
 
+    def restore_wifi_if_flagged(self, serial):
+        self.calls.append(("restore-wifi", serial))
+
 
 class FakeRequest:
     def __init__(self, replies=None, error=None):
@@ -386,6 +389,46 @@ class InProcessPath(unittest.TestCase):
         self.assertEqual(env.platform.killed, [4242])
         self.assertIn(("stop", SERIAL), env.adb.calls)
         self.assertIn(("reverse", SERIAL), env.adb.calls)
+
+    def test_disconnect_cleans_the_headset_when_the_old_relay_is_already_dead(self):
+        # #118: the relay died with a killed `connect --hold`, so there is no
+        # stale pid, but the headset still has its VPN up and Wi-Fi off.
+        env = make_env()
+        env.platform.stale = []
+        result = cli_commands.disconnect(env.local)
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(env.platform.killed, [])
+        for call in ("stop", "force-stop", "reverse"):
+            self.assertIn((call, SERIAL), env.adb.calls)
+        self.assertIn(("restore-wifi", SERIAL), env.tether.calls)
+
+    def test_disconnect_restores_wifi_when_killing_a_stale_relay(self):
+        env = make_env()
+        env.platform.stale = [4242]
+        cli_commands.disconnect(env.local)
+        self.assertIn(("restore-wifi", SERIAL), env.tether.calls)
+        self.assertEqual(env.platform.killed, [4242])
+
+    def test_disconnect_with_no_headset_still_kills_the_stale_relay(self):
+        env = make_env()
+        env.adb.quest = None
+        env.platform.stale = [4242]
+        cli_commands.disconnect(env.local)
+        self.assertEqual(env.platform.killed, [4242])
+        self.assertNotIn(("stop", SERIAL), env.adb.calls)
+
+    def test_one_failing_cleanup_step_does_not_skip_the_rest(self):
+        env = make_env()
+
+        def boom(serial):
+            raise RuntimeError("adb went away")
+
+        env.adb.stop_gnirehtet_client = boom
+        env.platform.stale = [4242]
+        cli_commands.disconnect(env.local)
+        self.assertIn(("reverse", SERIAL), env.adb.calls)
+        self.assertIn(("restore-wifi", SERIAL), env.tether.calls)
+        self.assertEqual(env.platform.killed, [4242])
 
     def test_wifi_sync_runs_in_process(self):
         env = make_env()
@@ -702,6 +745,37 @@ class ConnectHold(unittest.TestCase):
         self.assertIn(("connect", SERIAL), env.tether.calls)
         self.assertIn(("disconnect", True), env.tether.calls)
         self.assertIn("Holding the tether; press Ctrl+C to stop.", out.getvalue())
+
+    def _hold_with_signal(self, name):
+        import signal
+
+        env = make_env()
+        env.tether.stats.state = TetherState.IDLE
+        signum = getattr(signal, name)
+        before = signal.getsignal(signum)
+
+        def deliver(_seconds):
+            # What the kernel does on SIGTERM/SIGHUP: run the installed handler.
+            handler = signal.getsignal(signum)
+            self.assertTrue(callable(handler), "no handler for %s during hold" % name)
+            handler(signum, None)
+
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(cli_commands, "make_backend", return_value=env.local):
+            with patch("time.sleep", side_effect=deliver):
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = cli.main(["connect", "--hold"])
+        self.assertEqual(code, 0)
+        self.assertIn(("disconnect", True), env.tether.calls)
+        self.assertEqual(signal.getsignal(signum), before)
+
+    @unittest.skipUnless(hasattr(__import__("signal"), "SIGTERM"), "no SIGTERM")
+    def test_hold_in_process_handles_sigterm_and_disconnects(self):
+        self._hold_with_signal("SIGTERM")
+
+    @unittest.skipUnless(hasattr(__import__("signal"), "SIGHUP"), "no SIGHUP")
+    def test_hold_in_process_handles_sighup_and_disconnects(self):
+        self._hold_with_signal("SIGHUP")
 
     def test_hold_in_process_json_prints_json_to_stdout(self):
         env = make_env()
