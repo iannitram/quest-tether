@@ -689,6 +689,9 @@ class TetherManager:
         self._session_started = True
         self._reconnect_attempts = 0
         self.stats.device_serial = serial
+        # A failed wifi-off or a rate baseline from an earlier session must not leak (#129)
+        self._wifi_off_failed = False
+        self._reset_rate_baseline()
 
         self._set_state(TetherState.STARTING)
 
@@ -861,6 +864,7 @@ class TetherManager:
             self._kill_process()
 
         self.stats = TetherStats()
+        self._reset_rate_baseline()
         self._start_time = None
         self._set_state(TetherState.IDLE)
         self._log("Disconnected")
@@ -891,6 +895,10 @@ class TetherManager:
                 self._log("VPN interface down")
             else:
                 self._log("Warning: VPN interface still present")
+
+        if not self._headset_wifi_restore_needed():
+            self._log("Wi-Fi left as it is: leave mode and no wifi-off flag (#129)")
+            return
 
         # Toggle Wi-Fi to restore DNS
         self._log("Toggling Wi-Fi to restore DNS...")
@@ -1223,6 +1231,9 @@ class TetherManager:
                 self.adb.force_stop_gnirehtet(serial)
             if _aborted():
                 return
+            if not self._headset_wifi_restore_needed():
+                self._log("Error path: Wi-Fi left as it is: leave mode and no wifi-off flag (#129)")
+                return
             self._log("Error path: toggling Wi-Fi to restore DNS...")
             self.adb.toggle_wifi(serial, wait_seconds=self.ERROR_RESTORE_WIFI_WAIT)
             self._clear_wifi_flag()
@@ -1322,9 +1333,11 @@ class TetherManager:
         # tun0 traffic counters — 1 ADB call
         tun0 = self.adb.get_tun0_stats(serial)
         if not tun0:
-            # Tunnel missing: zero the rates rather than freezing stale numbers
+            # Tunnel missing: zero the rates rather than freezing stale numbers, and
+            # drop the baseline so a recreated tun0 starts from zero (#129)
             self.stats.rx_rate_bps = 0.0
             self.stats.tx_rate_bps = 0.0
+            self._reset_rate_baseline()
         if tun0:
             rx = tun0["rx_bytes"]
             tx = tun0["tx_bytes"]
@@ -1332,8 +1345,9 @@ class TetherManager:
             if self._prev_stat_time > 0:
                 dt = now - self._prev_stat_time
                 if dt > 0:
-                    self.stats.rx_rate_bps = (rx - self._prev_rx) / dt
-                    self.stats.tx_rate_bps = (tx - self._prev_tx) / dt
+                    # Never negative: a counter that went back (tun0 recreated) reads as zero (#129)
+                    self.stats.rx_rate_bps = max(0.0, (rx - self._prev_rx) / dt)
+                    self.stats.tx_rate_bps = max(0.0, (tx - self._prev_tx) / dt)
 
             self.stats.rx_bytes = rx
             self.stats.tx_bytes = tx
@@ -1377,9 +1391,25 @@ class TetherManager:
     def _apply_wifi_policy(self, serial: str):
         self._last_wifi_check = time.time()
         if self._wifi_mode == "off":
-            self._wifi_off(serial)
+            # Only once the tunnel is Connected: while Starting no relay client is
+            # counted yet, and a failed check then must not block the policy (#129)
+            if self.stats.state is TetherState.CONNECTED:
+                self._wifi_off(serial)
         elif self._wifi_mode == "sync":
             self._sync_wifi(serial)
+
+    def _headset_wifi_restore_needed(self) -> bool:
+        """Whether a Wi-Fi toggle on the headset may run after a stop or an error.
+
+        In 'leave' mode the headset's Wi-Fi is the user's own setting, so only a
+        wifi-off flag we wrote (we turned it off) justifies a toggle (#129)."""
+        return self._wifi_mode != "leave" or os.path.exists(self._wifi_flag)
+
+    def _reset_rate_baseline(self):
+        """Forget the last tun0 counters, so the next sample sets no rate (#129)."""
+        self._prev_rx = 0
+        self._prev_tx = 0
+        self._prev_stat_time = 0
 
     def _clear_wifi_flag(self):
         try:
