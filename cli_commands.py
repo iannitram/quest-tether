@@ -200,23 +200,56 @@ class LocalBackend(Backend):
 
 
 # The probe errors that mean "no service here": a refused or reset connection,
-# qtetherd.request's ConnectionError("no answer") for an empty reply, or a
-# timeout (socket.timeout is TimeoutError on Python 3.10+).
-SERVICE_ABSENT_ERRORS = (ConnectionError, socket.timeout)
+# or qtetherd.request's ConnectionError("no answer") for an empty reply.
+SERVICE_ABSENT_ERRORS = (ConnectionError,)
+
+# A probe timeout (socket.timeout is TimeoutError on Python 3.10+) is a service
+# that is there but slow. It is not "no service" for a state-changing command.
+SERVICE_SLOW_ERRORS = (socket.timeout,)
+
+# The commands that change the tether, the headset or the saved settings.
+STATE_CHANGING_COMMANDS = ("connect", "disconnect", "wifi-sync", "settings-set")
+
+BUSY_ERROR = "service busy"
+BUSY_DETAIL = (
+    "qtetherd did not answer in time; it may be busy. "
+    "Nothing was changed. Try again in a few seconds."
+)
 
 
-def make_backend(platform=None, request=None, adb=None, tether=None) -> Backend:
+class BusyBackend(Backend):
+    """The service is there but slow: every call reports it busy (exit code 1)."""
+
+    mode = "service"
+
+    def _busy(self, *args, **kwargs) -> dict:
+        return {"ok": False, "error": BUSY_ERROR, "detail": BUSY_DETAIL}
+
+    status = connect = disconnect = wifi_sync = logs = settings_get = _busy
+    settings_set = _busy
+
+
+def make_backend(
+    platform=None, request=None, adb=None, tether=None, state_changing=False
+) -> Backend:
     """Pick the service or in-process path once, for one command.
 
-    Only a refused, reset, silent or timed-out connection means "no service":
-    those fall back to LocalBackend. Any other socket error, or an answer that
-    is not JSON, keeps the service path, so the command reports that error
-    instead of silently starting a second core next to a service that is there.
+    A refused, reset or silent connection means "no service": LocalBackend.
+    A timed-out probe means a slow service: a read-only command falls back to
+    LocalBackend, but a state-changing one (state_changing=True) gets a
+    BusyBackend, because an in-process disconnect would kill the service's
+    relay (#125). Any other socket error, or an answer that is not JSON, keeps
+    the service path, so the command reports that error instead of silently
+    starting a second core next to a service that is there.
     """
     platform = platform or qt_platform.current()
     probe = request or qtetherd.request
     try:
         probe({"cmd": "status"}, timeout=1)
+    except SERVICE_SLOW_ERRORS:
+        if state_changing:
+            return BusyBackend(platform=platform, adb=adb, tether=tether)
+        return LocalBackend(platform=platform, adb=adb, tether=tether)
     except SERVICE_ABSENT_ERRORS:
         return LocalBackend(platform=platform, adb=adb, tether=tether)
     except (OSError, ValueError):

@@ -122,6 +122,24 @@ class Binding(unittest.TestCase):
         with self.assertRaises(OSError):
             qtetherd.make_server(lambda r: {}, "127.0.0.1", server.server_address[1])
 
+    def test_a_restart_can_bind_the_port_right_after_a_request(self):
+        # Each request leaves a TIME_WAIT socket on the server side; without
+        # SO_REUSEADDR the next bind fails for about a minute (#125).
+        server, stop = start(lambda r: {"ok": True})
+        port = server.server_address[1]
+        self.assertEqual(qtetherd.request({"cmd": "x"}, "127.0.0.1", port), {"ok": True})
+        stop()
+        again = qtetherd.make_server(lambda r: {}, "127.0.0.1", port)
+        again.server_close()
+
+    def test_a_live_second_listener_is_still_refused_with_reuse_on(self):
+        server, stop = start(lambda r: {"ok": True})
+        self.addCleanup(stop)
+        port = server.server_address[1]
+        qtetherd.request({"cmd": "x"}, "127.0.0.1", port)
+        with self.assertRaises(OSError):
+            qtetherd.make_server(lambda r: {}, "127.0.0.1", port)
+
     def test_default_port(self):
         self.assertEqual((qtetherd.HOST, qtetherd.PORT), ("127.0.0.1", 31417))
 

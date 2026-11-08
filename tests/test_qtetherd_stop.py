@@ -154,9 +154,9 @@ class StopTimeoutsAgree(unittest.TestCase):
 
 
 class SigtermHandler(unittest.TestCase):
-    def _install(self, tether, server, find_serial=lambda: "SERIAL", cap=5.0):
+    def _install(self, tether, server, find_serial=lambda: "SERIAL", cap=5.0, **extra):
         with patch("qtetherd.signal.signal") as install:
-            qtetherd._install_stop_handler(tether, find_serial, server, cap=cap)
+            qtetherd._install_stop_handler(tether, find_serial, server, cap=cap, **extra)
         install.assert_called_once()
         self.assertEqual(install.call_args.args[0], signal.SIGTERM)
         return install.call_args.args[1]
@@ -172,6 +172,44 @@ class SigtermHandler(unittest.TestCase):
 
         self.assertEqual(tether.calls, [True])
         self.assertTrue(shut.wait(5), "server.shutdown() was not called")
+
+    def test_sigterm_stops_the_usb_monitor_before_the_disconnect(self):
+        order = []
+        tether = FakeTether()
+        original = tether.disconnect
+        tether.disconnect = lambda headset_present=True: (
+            order.append("disconnect"),
+            original(headset_present=headset_present),
+        )
+        adb = Mock()
+        adb.stop_monitoring.side_effect = lambda: order.append("stop_monitoring")
+        server = Mock()
+        shut = threading.Event()
+        server.shutdown.side_effect = shut.set
+        handler = self._install(tether, server, adb=adb, stopped=threading.Event())
+
+        handler(signal.SIGTERM, None)
+
+        self.assertEqual(order, ["stop_monitoring", "disconnect"])
+        self.assertTrue(shut.wait(5))
+
+    def test_a_plug_event_after_sigterm_does_not_connect(self):
+        stopped = threading.Event()
+        tether = Mock()
+        tether.auto_reconnect = True
+        on_connected, on_disconnected = qtetherd._monitor_callbacks(tether, stopped)
+        server = Mock()
+        shut = threading.Event()
+        server.shutdown.side_effect = shut.set
+        handler = self._install(FakeTether(), server, adb=Mock(), stopped=stopped)
+
+        handler(signal.SIGTERM, None)
+        on_connected({"serial": "HEADSET", "status": "device"})
+        on_disconnected()
+
+        tether.connect.assert_not_called()
+        tether.note_usb_event.assert_not_called()
+        self.assertTrue(shut.wait(5))
 
     def test_sigterm_with_no_headset_still_stops_the_relay(self):
         tether = FakeTether()
