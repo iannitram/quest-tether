@@ -152,7 +152,7 @@ class ReconnectCount(unittest.TestCase):
 
         manager.disconnect()
 
-        adb.remove_all_reverse_tunnels.assert_called_once_with("S")
+        adb.remove_gnirehtet_reverse.assert_called_once_with("S")
         manager._kill_process.assert_called_once_with()
 
     def test_connect_while_reconnecting_returns_true_without_relay(self):

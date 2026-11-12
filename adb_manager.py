@@ -20,6 +20,16 @@ import vpn_state
 logger = logging.getLogger(__name__)
 
 
+GNIREHTET_REVERSE = "localabstract:gnirehtet"
+
+
+def has_gnirehtet_reverse(text: Optional[str]) -> bool:
+    """True if `adb reverse --list` output lists gnirehtet's socket (`<transport> localabstract:gnirehtet tcp:<port>`)."""
+    if not text:
+        return False
+    return any(GNIREHTET_REVERSE in line.split() for line in text.splitlines())
+
+
 def parse_devices(text: str) -> List[Dict[str, str]]:
     """Parse output of 'adb devices' or 'adb devices -l'."""
     devices = []
@@ -405,9 +415,17 @@ class ADBManager:
         )
         return result.returncode == 0 and "OK" in result.stdout
 
-    def remove_all_reverse_tunnels(self, serial: str) -> bool:
-        """Remove ALL ADB reverse tunnels."""
-        result = self.run_adb("-s", serial, "reverse", "--remove-all")
+    def remove_gnirehtet_reverse(self, serial: str) -> bool:
+        """Remove gnirehtet's reverse mapping, and only that one (#142).
+
+        Other tools can hold their own `adb reverse` mappings on the same
+        cable; `--remove-all` would take theirs down too. True if it was
+        listed and removed.
+        """
+        listed = self.run_adb("-s", serial, "reverse", "--list")
+        if listed.returncode != 0 or not has_gnirehtet_reverse(listed.stdout):
+            return False
+        result = self.run_adb("-s", serial, "reverse", "--remove", GNIREHTET_REVERSE)
         return result.returncode == 0
 
     def toggle_wifi(self, serial: str, wait_seconds: float = 4.0) -> bool:
