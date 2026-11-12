@@ -174,7 +174,7 @@ class LocalBackend(Backend):
         for step in (
             self.adb.stop_gnirehtet_client,
             self.adb.force_stop_gnirehtet,
-            self.adb.remove_all_reverse_tunnels,
+            self.adb.remove_gnirehtet_reverse,
             getattr(self.tether, "restore_wifi_if_flagged", None),
         ):
             if step is None:

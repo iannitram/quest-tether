@@ -144,7 +144,7 @@ class FakeADB:
         self.calls.append(("force-stop", serial))
         return True
 
-    def remove_all_reverse_tunnels(self, serial):
+    def remove_gnirehtet_reverse(self, serial):
         self.calls.append(("reverse", serial))
         return True
 

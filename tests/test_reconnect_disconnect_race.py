@@ -86,8 +86,8 @@ class FakeAdb:
         self.calls.append("start_gnirehtet_client")
         return True
 
-    def remove_all_reverse_tunnels(self, serial):
-        self.calls.append("remove_all_reverse_tunnels")
+    def remove_gnirehtet_reverse(self, serial):
+        self.calls.append("remove_gnirehtet_reverse")
 
     def stop_gnirehtet_client(self, serial, timeout=None):
         self.calls.append("stop_gnirehtet_client")

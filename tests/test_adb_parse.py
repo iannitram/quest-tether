@@ -248,6 +248,58 @@ class DeviceListed(unittest.TestCase):
             self.assertIsNone(manager.device_listed("1WMHH111111111"))
 
 
+class GnirehtetReverseOnly(unittest.TestCase):
+    """Disconnect removes gnirehtet's reverse mapping and leaves other tools' alone (#142)."""
+
+    OTHER = "UsbFfs localabstract:other tcp:9222\n"
+    LIST = OTHER + "UsbFfs localabstract:gnirehtet tcp:31416\n"
+
+    def make_manager(self):
+        platform = Mock()
+        platform.no_window_flags.return_value = 0
+        return adb_manager.ADBManager(adb_path="adb", platform=platform)
+
+    @staticmethod
+    def result(returncode=0, stdout=""):
+        return subprocess.CompletedProcess([], returncode, stdout, "")
+
+    def test_list_parser(self):
+        self.assertTrue(adb_manager.has_gnirehtet_reverse(self.LIST))
+        self.assertFalse(adb_manager.has_gnirehtet_reverse(self.OTHER))
+        self.assertFalse(adb_manager.has_gnirehtet_reverse(
+            "UsbFfs localabstract:gnirehtet-extra tcp:31416\n"))
+        self.assertFalse(adb_manager.has_gnirehtet_reverse(""))
+        self.assertFalse(adb_manager.has_gnirehtet_reverse(None))
+
+    def test_removes_only_the_gnirehtet_mapping(self):
+        manager = self.make_manager()
+        outputs = [self.result(stdout=self.LIST), self.result()]
+        with patch.object(manager, "run_adb", side_effect=outputs) as run:
+            self.assertTrue(manager.remove_gnirehtet_reverse("quest-serial"))
+        self.assertEqual([c.args for c in run.call_args_list], [
+            ("-s", "quest-serial", "reverse", "--list"),
+            ("-s", "quest-serial", "reverse", "--remove", "localabstract:gnirehtet"),
+        ])
+
+    def test_nothing_removed_when_gnirehtet_is_not_listed(self):
+        manager = self.make_manager()
+        with patch.object(manager, "run_adb", side_effect=[self.result(stdout=self.OTHER)]) as run:
+            self.assertFalse(manager.remove_gnirehtet_reverse("quest-serial"))
+        self.assertEqual(run.call_count, 1)
+
+    def test_nothing_removed_when_the_list_fails(self):
+        manager = self.make_manager()
+        with patch.object(manager, "run_adb", side_effect=[self.result(returncode=1)]) as run:
+            self.assertFalse(manager.remove_gnirehtet_reverse("quest-serial"))
+        self.assertEqual(run.call_count, 1)
+
+    def test_remove_all_is_never_called(self):
+        for name in os.listdir(ROOT):
+            if name.endswith(".py"):
+                with open(os.path.join(ROOT, name), encoding="utf-8") as f:
+                    self.assertNotIn('"--remove-all"', f.read(), name)
+
+
 class UdevFiles(unittest.TestCase):
     def test_rule_file_is_exactly_one_line(self):
         with open(os.path.join(ROOT, "packaging", "linux", "51-quest-tether.rules")) as f:

@@ -895,7 +895,7 @@ class TetherManager:
         finally:
             if headset_present and serial:
                 try:
-                    self.adb.remove_all_reverse_tunnels(serial)
+                    self.adb.remove_gnirehtet_reverse(serial)
                 except Exception as e:
                     self._log(f"Could not remove reverse tunnels: {e}")
             self._kill_process()

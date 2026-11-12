@@ -198,7 +198,7 @@ class FakeAdb:
         self.calls.append("wifi_check")
         return True
 
-    def remove_all_reverse_tunnels(self, serial):
+    def remove_gnirehtet_reverse(self, serial):
         self.calls.append("reverse_remove")
         return True
 
