@@ -238,7 +238,11 @@ def handle_request(tether, find_serial, req, lock=None) -> dict:
     cmd = req["cmd"]
     if cmd == "status":
         s = tether.stats
+        adb_path = getattr(getattr(tether, "adb", None), "adb_path", None)
         return {
+            "version": 1,
+            # _find_adb returns the bare command "adb" when discovery found nothing.
+            "adb_path": (adb_path or None) if adb_path != "adb" else None,
             "state": s.state.value,
             "rx_bps": s.rx_rate_bps,
             "tx_bps": s.tx_rate_bps,

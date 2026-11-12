@@ -83,6 +83,8 @@ class Status(unittest.TestCase):
         self.assertEqual(
             qtetherd.handle_request(t, SERIAL, {"cmd": "status"}),
             {
+                "version": 1,
+                "adb_path": None,
                 "state": "connected",
                 "rx_bps": 2000.0,
                 "tx_bps": 500.0,

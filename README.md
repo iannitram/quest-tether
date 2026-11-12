@@ -16,6 +16,8 @@ command prints text by default, or one JSON object with `--json`; exit codes are
 127.0.0.1:31417 the command goes through the service; otherwise it runs the
 tether in-process.
 
+Read-only clients: [versioned status contract](docs/client-contract.md), including JSON fields and service calls.
+
 | Command | Does |
 |---|---|
 | `status` | State, throughput, uptime, battery level and temperature zone, reconnect count, serial. |
