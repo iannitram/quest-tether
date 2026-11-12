@@ -1,6 +1,6 @@
 # Code map
 
-What each part owns, who calls whom, and how a Windows-only app becomes Windows + Linux + a Decky plugin (SPEC M6-M9), with a command line on top. Describes commit: `f86f36e` (2026-11-05). Checked against `main` on 2026-11-07: every module in the repo root, `qt_platform/` and `decky/` is listed below; 848 unit tests pass on Linux (with #62, after #86 and the MCP server, #75, the disconnect race #103, and the error-path restore #116). Spec: [../SPEC.md](../SPEC.md). Background and measured facts: [notes/](notes/).
+What each part owns, who calls whom, and how a Windows-only app becomes Windows + Linux + a Decky plugin (SPEC M6-M9), with a command line on top. Quest Tether is a standalone app; other apps, such as Flat to 3D, are read-only clients of its status interface: they may read `status`, but do not start, stop, heal or reconfigure it (client contract: [#140](https://github.com/iannitram/quest-tether/issues/140)). Describes commit: `f86f36e` (2026-11-05). Checked against `main` on 2026-11-07: every module in the repo root, `qt_platform/` and `decky/` is listed below; 848 unit tests pass on Linux (with #62, after #86 and the MCP server, #75, the disconnect race #103, and the error-path restore #116). Spec: [../SPEC.md](../SPEC.md). Background and measured facts: [notes/](notes/).
 
 ## Layout
 
