@@ -1,6 +1,6 @@
 # Quest Tether
 
-Desktop app for Windows and Linux (SteamOS included, with a Decky plugin for Game Mode) that tethers a Meta Quest headset to the PC: reverse tethering over USB with gnirehtet, plus keeping the headset on the PC's Wi-Fi. A `quest-tether` command line drives the same features.
+Quest Tether is a standalone desktop app for Windows and Linux (SteamOS included, with a Decky plugin for Game Mode) that tethers a Meta Quest headset to the PC: reverse tethering over USB with gnirehtet, plus keeping the headset on the PC's Wi-Fi. A `quest-tether` command line drives the same features. Other apps, such as Flat to 3D, are read-only clients of its status interface: they may read `status`, but do not start, stop, heal or reconfigure Quest Tether (client contract: [#140](https://github.com/iannitram/quest-tether/issues/140)).
 
 This repo holds the code and the project notes (setup guide, bug log, phase plans, resolved questions) under `docs/notes/`; work is tracked in this repo's issues.
 
