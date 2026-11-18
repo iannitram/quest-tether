@@ -2,6 +2,7 @@
 
 Newest first. One line per change of stage, release or decision that the next session needs.
 
+- 2026-11-18 PM audit: the code map's test count, stage 1, 6 and 7 text, where-it-stands and After 1.0 list follow the open and closed issues (#74, #75, #3 closed; #104 open; #130 listed); documents only.
 - 2026-11-11 Roadmap map: the roadmap now has its own file with a features block (13 features) for the milestones and feature labels; the stage list stays in the code map, and the pipeline file points at the new roadmap.
 - 2026-11-07 Service settings persist (#117): auto-reconnect and the headset Wi-Fi mode are saved to `settings.json` in the config folder, loaded at service start (a valid `QT_WIFI_MODE` wins for Wi-Fi, then the file, then the defaults), and the window shows them at start. Linux only; the Windows in-process path is unchanged.
 - 2026-11-07 The Linux package builds from the repo (#21): `packaging/linux/build.sh` makes `quest-tether` and `qtetherd` (`build-linux.spec`), the Decky zip when pnpm is present, and `dist/quest-tether-linux.tar.gz`. `install.sh` prints where the Decky zip is and does not load it (one sudo prompt, for the USB rule).

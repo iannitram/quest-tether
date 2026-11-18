@@ -1,6 +1,6 @@
 # Roadmap
 
-Updated: 2026-11-11
+Updated: 2026-11-18
 
 features:
 - package: Repo and release package: tools out of git, CI, the first-run tool check, the Linux and Windows packages
