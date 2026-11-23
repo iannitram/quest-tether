@@ -15,3 +15,5 @@ Everything you need to work here is in this repo. The full pipeline and rules (`
 
 - Windows and Linux (SteamOS, with a Decky plugin), plus the `quest-tether` CLI: spec `SPEC.md`, code map `docs/code-map.md`. OS differences go only in `qt_platform/`. Notes, setup guide and bug log: `docs/notes/`.
 - Tool binaries (adb, gnirehtet, the APK) are never committed: `tools/README.md` says where they come from.
+
+**Upstream and peers:** see `PEERS.md` at the repo root. When I say "upstream", I mean the repo in its Upstream section; reuse a peer's code only as that file allows.
